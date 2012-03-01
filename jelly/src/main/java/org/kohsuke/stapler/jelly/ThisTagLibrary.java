@@ -34,6 +34,7 @@ import org.apache.commons.jelly.expression.ExpressionSupport;
 import org.apache.commons.jelly.impl.TagScript;
 import org.kohsuke.stapler.MetaClass;
 import org.kohsuke.stapler.WebApp;
+import org.kohsuke.stapler.lang.Klass;
 import org.xml.sax.Attributes;
 
 /**
@@ -69,7 +70,8 @@ public class ThisTagLibrary extends TagLibrary {
                 if (it==null)
                     throw new JellyTagException("'"+ expr.getExpressionText() +"' evaluated to null");
                 try {
-                    MetaClass c = WebApp.getCurrent().getMetaClass(it instanceof Class? (Class)it : it.getClass());
+                    WebApp webApp = WebApp.getCurrent();
+                    MetaClass c = webApp.getMetaClass(it instanceof Class ? Klass.java((Class)it):  webApp.getKlass(it));
                     // prefer 'foo.jellytag' to avoid tags from showing up as views,
                     // but for backward compatibility, support the plain .jelly extention as well.
                     Script tag = c.loadTearOff(JellyClassTearOff.class).findScript(tagName+".jellytag");

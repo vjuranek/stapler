@@ -3,7 +3,7 @@
   <parent>
     <groupId>org.kohsuke.stapler</groupId>
     <artifactId>stapler-parent</artifactId>
-    <version>1.174-SNAPSHOT</version>
+    <version>1.179-SNAPSHOT</version>
   </parent>
   
   <artifactId>stapler</artifactId>
@@ -68,8 +68,8 @@
         This isn't needed unless the user has a Groovy dependency, so marked as optional.
        -->
       <groupId>org.codehaus.groovy</groupId>
-      <artifactId>groovy</artifactId>
-      <version>1.6.0</version>
+      <artifactId>groovy-all</artifactId>
+      <version>1.8.3</version>
       <optional>true</optional>
     </dependency>
     <dependency>

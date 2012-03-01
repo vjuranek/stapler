@@ -3,6 +3,7 @@ package org.kohsuke.stapler.jelly.jruby;
 import org.apache.commons.jelly.JellyTagException;
 import org.apache.commons.jelly.Script;
 import org.jruby.RubyClass;
+import org.jruby.RubyModule;
 import org.jruby.RubyObject;
 import org.jruby.embed.LocalContextScope;
 import org.jruby.embed.ScriptingContainer;
@@ -17,18 +18,17 @@ import org.kohsuke.stapler.WebApp;
 import org.kohsuke.stapler.jelly.JellyCompatibleFacet;
 import org.kohsuke.stapler.jelly.JellyFacet;
 import org.kohsuke.stapler.jelly.jruby.erb.ERbClassTearOff;
+import org.kohsuke.stapler.lang.Klass;
 
 import javax.servlet.RequestDispatcher;
 import javax.servlet.ServletException;
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 
@@ -40,14 +40,14 @@ import java.util.logging.Level;
  */
 @MetaInfServices(Facet.class)
 public class JRubyFacet extends Facet implements JellyCompatibleFacet {
-    private final Map<RubyClass,JRubyClassInfo> classMap = new WeakHashMap<RubyClass,JRubyClassInfo>();
-
     /*package*/ final List<RubyTemplateLanguage> languages = new CopyOnWriteArrayList<RubyTemplateLanguage>();
 
     /**
      * There are all kinds of downsides in doing this, but for the time being we just use one scripting container.
      */
     private final ScriptingContainer container;
+
+    private final RubyKlassNavigator navigator;
 
     /**
      * {@link RubyTemplateContainer}s keyed by their {@linkplain RubyTemplateLanguage#getScriptExtension() extensions}.
@@ -64,6 +64,8 @@ public class JRubyFacet extends Facet implements JellyCompatibleFacet {
 
         container = new ScriptingContainer(LocalContextScope.SINGLETHREAD); // we don't want any funny multiplexing from ScriptingContainer.
         container.runScriptlet("require 'org/kohsuke/stapler/jelly/jruby/JRubyJellyScriptImpl'");
+
+        navigator = new RubyKlassNavigator(container.getProvider().getRuntime(), getClass().getClassLoader());
 
         for (RubyTemplateLanguage l : languages) {
             templateContainers.put(l.getScriptExtension(),l.createContainer(container));
@@ -84,27 +86,26 @@ public class JRubyFacet extends Facet implements JellyCompatibleFacet {
         return selectTemplateContainer(template.getPath()).parseScript(template);
     }
 
-    public synchronized JRubyClassInfo getClassInfo(RubyClass r) {
-        if (r==null)    return null;
+    @Override
+    public Klass<RubyModule> getKlass(Object o) {
+        if (o instanceof RubyObject)
+            return makeKlass(((RubyObject) o).getMetaClass());
+        return null;
+    }
 
-        JRubyClassInfo o = classMap.get(r);
-        if (o==null)
-            classMap.put(r,o=new JRubyClassInfo(this,r));
-        return o;
+    private Klass<RubyModule> makeKlass(RubyModule o) {
+        return new Klass<RubyModule>(o,navigator);
+    }
+
+    public synchronized MetaClass getClassInfo(RubyClass r) {
+        return WebApp.getCurrent().getMetaClass(makeKlass(r));
+    }
+
+    private boolean isRuby(MetaClass mc) {
+        return mc.klass.clazz instanceof RubyModule;
     }
 
     public void buildViewDispatchers(final MetaClass owner, List<Dispatcher> dispatchers) {
-        if (RubyObject.class.isAssignableFrom(owner.clazz)) {
-            dispatchers.add(new ScriptInvokingDispatcher() {
-                @Override
-                public boolean dispatch(RequestImpl req, ResponseImpl rsp, Object node) throws IOException, ServletException, IllegalAccessException, InvocationTargetException {
-                    String next = req.tokens.peek();
-                    if(next==null) return false;
-                    JRubyClassInfo info = getClassInfo(((RubyObject) node).getMetaClass());
-                    return invokeScript(req, rsp, node, next, info.findScript(next));
-                }
-            });
-        }
         for (final Class<? extends AbstractRubyTearOff> t : getClassTearOffTypes()) {
             dispatchers.add(new ScriptInvokingDispatcher() {
                 final AbstractRubyTearOff tearOff = owner.loadTearOff(t);
@@ -118,30 +119,10 @@ public class JRubyFacet extends Facet implements JellyCompatibleFacet {
         }
     }
 
-    protected abstract class ScriptInvokingDispatcher extends Dispatcher {
-        protected boolean invokeScript(RequestImpl req, ResponseImpl rsp, Object node, String next, Script script) throws IOException, ServletException {
-            try {
-                if(script==null) return false;
-                
-                req.tokens.next();
-
-                if(traceable())
-                    trace(req,rsp,"Invoking "+next+" on "+node+" for "+req.tokens);
-
-                WebApp.getCurrent().getFacet(JellyFacet.class).scriptInvoker.invokeScript(req, rsp, script, node);
-
-                return true;
-            } catch (RuntimeException e) {
-                throw e;
-            } catch (IOException e) {
-                throw e;
-            } catch (Exception e) {
-                throw new ServletException(e);
-            }
-        }
-
-        public String toString() {
-            return "TOKEN for url=/TOKEN/...";
+    @Override
+    public void buildFallbackDispatchers(MetaClass owner, List<Dispatcher> dispatchers) {
+        if (isRuby(owner)) {
+            dispatchers.add(new RackDispatcher());
         }
     }
 
@@ -157,27 +138,14 @@ public class JRubyFacet extends Facet implements JellyCompatibleFacet {
     }
 
 
-    public RequestDispatcher createRequestDispatcher(RequestImpl request, Class type, Object it, String viewName) throws IOException {
+    public RequestDispatcher createRequestDispatcher(RequestImpl request, Klass<?> type, Object it, String viewName) throws IOException {
         TearOffSupport mc = request.stapler.getWebApp().getMetaClass(type);
         return mc.loadTearOff(ERbClassTearOff.class).createDispatcher(it,viewName);
     }
 
-    public boolean handleIndexRequest(RequestImpl req, ResponseImpl rsp, Object node, MetaClass nodeMetaClass) throws IOException, ServletException {
-        if (node instanceof RubyObject) {
-            JRubyClassInfo info = getClassInfo(((RubyObject) node).getMetaClass());
-            Script script = info.findScript("index");
-            if (script!=null) {
-                try {
-                    WebApp.getCurrent().getFacet(JellyFacet.class).scriptInvoker.invokeScript(req, rsp, script, node);
-                    return true;
-                } catch (JellyTagException e) {
-                    throw new ServletException(e);
-                }
-            }
-        }
-
+    public boolean handleIndexRequest(RequestImpl req, ResponseImpl rsp, Object node, MetaClass mc) throws IOException, ServletException {
         for (Class<? extends AbstractRubyTearOff> t : getClassTearOffTypes()) {
-            AbstractRubyTearOff rt = nodeMetaClass.loadTearOff(t);
+            AbstractRubyTearOff rt = mc.loadTearOff(t);
             Script script = rt.findScript("index");
             if(script!=null) {
                 try {
@@ -193,5 +161,6 @@ public class JRubyFacet extends Facet implements JellyCompatibleFacet {
 
         return false;
     }
+
 }
 

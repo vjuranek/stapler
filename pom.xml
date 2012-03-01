@@ -4,7 +4,7 @@
   <groupId>org.kohsuke.stapler</groupId>
   <artifactId>stapler-parent</artifactId>
   <packaging>pom</packaging>
-  <version>1.174-SNAPSHOT</version>
+  <version>1.179-SNAPSHOT</version>
 
   <name>Stapler</name>
   <description>Stapler HTTP request handling engine</description>
@@ -188,6 +188,12 @@
       <groupId>org.mortbay.jetty</groupId>
       <artifactId>jetty</artifactId>
       <version>6.1.11</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-all</artifactId>
+      <version>1.8.5</version>
       <scope>test</scope>
     </dependency>
     <dependency>
