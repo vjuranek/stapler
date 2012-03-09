@@ -24,15 +24,13 @@
 package org.kohsuke.stapler;
 
 import org.apache.commons.io.IOUtils;
-import org.objectweb.asm.AnnotationVisitor;
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.Label;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Type;
-import org.objectweb.asm.commons.EmptyVisitor;
+import org.kohsuke.asm3.ClassReader;
+import org.kohsuke.asm3.Label;
+import org.kohsuke.asm3.MethodVisitor;
+import org.kohsuke.asm3.Type;
+import org.kohsuke.asm3.commons.EmptyVisitor;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -40,7 +38,6 @@ import java.lang.reflect.Modifier;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Properties;
 import java.util.TreeMap;
 import java.util.logging.Logger;
 
@@ -74,7 +71,7 @@ public final class ClassDescriptor {
         // instance methods
         List<Function> functions = new ArrayList<Function>();
         for (Method m : clazz.getMethods()) {
-            functions.add(new Function.InstanceFunction(m).protectBy(m));
+            functions.add(new Function.InstanceFunction(m).wrapByInterceptors(m));
         }
         if(wrappers!=null) {
             for (Class w : wrappers) {
@@ -86,7 +83,7 @@ public final class ClassDescriptor {
                         continue;
                     if(p[0].isAssignableFrom(clazz))
                         continue;
-                    functions.add(new Function.StaticFunction(m).protectBy(m));
+                    functions.add(new Function.StaticFunction(m).wrapByInterceptors(m));
                 }
             }
         }
@@ -185,7 +182,7 @@ public final class ClassDescriptor {
                     else
                         return null; // ignore this method
                 }
-            }, false);
+            }, 0);
 
             // Indexes may not be sequential, but first set of local variables are method params
             int i = 0;
@@ -221,7 +218,7 @@ public final class ClassDescriptor {
                     else
                         return null; // ignore this method
                 }
-            }, false);
+            }, 0);
 
             // Indexes may not be sequential, but first set of local variables are method params
             int i = 0;

@@ -174,8 +174,10 @@ public class LargeText {
             ByteBuf buf = new ByteBuf(null,f);
             HeadMark head = new HeadMark(buf);
             TailMark tail = new TailMark(buf);
+            buf = null;
 
-            while(tail.moveToNextLine(f)) {
+            int readLines = 0;
+            while(tail.moveToNextLine(f) && readLines++ < MAX_LINES_READ) {
                 head.moveTo(tail,os);
             }
             head.finish(os);
@@ -257,7 +259,7 @@ public class LargeText {
 
         /**
          * Moves this mark to 'that' mark, and writes the data
-         * to {@link OutputStream} if necessary.
+         * in between to {@link OutputStream} if necessary.
          */
         void moveTo(Mark that, OutputStream os) throws IOException {
             while(this.buf!=that.buf) {
@@ -394,4 +396,9 @@ public class LargeText {
             return in.read(buf,offset,length);
         }
     }
+
+    /**
+     * We cap the # of lines read in one batch to avoid buffering too much in memory.
+     */
+    private static final int MAX_LINES_READ = 10000;
 }
