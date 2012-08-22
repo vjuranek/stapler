@@ -40,13 +40,15 @@ public final class TokenList {
     public int idx;
 
     TokenList(String url) {
-        StringTokenizer tknzr = new StringTokenizer(url,"/");
+        StringTokenizer tknzr = new StringTokenizer(url,"/\\");
         final int tokenCount = tknzr.countTokens();
         tokens = new String[tokenCount];
         rawTokens = new String[tokenCount];
         for(int i=0; tknzr.hasMoreTokens(); i++) {
             rawTokens[i] = tknzr.nextToken();
             tokens[i] = decode(rawTokens[i]);
+            if (tokens[i].equals(".."))
+                throw new IllegalArgumentException(url);
         }
     }
 

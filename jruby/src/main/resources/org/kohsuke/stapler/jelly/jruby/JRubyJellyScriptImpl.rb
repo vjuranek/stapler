@@ -59,9 +59,17 @@ module JRubyJellyScriptImpl
     # this is where we handle all the variable references
     def method_missing(name, *args)
       # variables defined in the current context
-      v = context.getVariable(name.to_s)
-      return v if v
+      v = context.getVariableWithDefaultValue(name.to_s,UNDEFINED)
+      return v if v!=UNDEFINED
       super # make it fail
+    end
+
+    def respond_to?(name)
+      if super
+        true
+      else
+        context.getVariableWithDefaultValue(name.to_s, UNDEFINED) != UNDEFINED
+      end
     end
 
     # load taglib
@@ -69,6 +77,8 @@ module JRubyJellyScriptImpl
       # TODO: cache
       Taglib.new(@context, uri)
     end
+
+    UNDEFINED = Object.new
   end
 
   # receives tag invocations as method calls

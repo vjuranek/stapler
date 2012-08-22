@@ -23,6 +23,8 @@
 
 package org.kohsuke.stapler;
 
+import org.kohsuke.stapler.compression.CompressionFilter;
+import org.kohsuke.stapler.export.ExportConfig;
 import org.kohsuke.stapler.export.NamedPathPruner;
 import org.kohsuke.stapler.export.Flavor;
 import org.kohsuke.stapler.export.Model;
@@ -195,9 +197,11 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
             pruner = new ByDepth(1 - depth);
         }
 
-        Model p = MODEL_BUILDER.get(exposedBean.getClass());
-        p.writeTo(exposedBean, pruner, flavor.createDataWriter(exposedBean,w));
+        ExportConfig config = new ExportConfig();
+        config.prettyPrint = req.hasParameter("pretty");
 
+        Model p = MODEL_BUILDER.get(exposedBean.getClass());
+        p.writeTo(exposedBean, pruner, flavor.createDataWriter(exposedBean,w,config));
 
         if(pad!=null) w.write(')');
         w.close();
@@ -209,6 +213,8 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
             return getOutputStream();   // compression not available
 
         addHeader("Content-Encoding","gzip");
+        if (CompressionFilter.has(req))
+            return getOutputStream(); // CompressionFilter will set up compression. no need to do anything
         return new GZIPOutputStream(getOutputStream());
     }
 
@@ -218,6 +224,8 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
             return getWriter();   // compression not available
 
         addHeader("Content-Encoding","gzip");
+        if (CompressionFilter.has(req))
+            return getWriter(); // CompressionFilter will set up compression. no need to do anything
         return new OutputStreamWriter(new GZIPOutputStream(getOutputStream()),getCharacterEncoding());
     }
 

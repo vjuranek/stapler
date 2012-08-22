@@ -30,7 +30,7 @@ import java.util.TreeSet;
  */
 @SuppressWarnings({"Since15"})
 @SupportedSourceVersion(SourceVersion.RELEASE_6)
-@SupportedAnnotationTypes("*")
+@SupportedAnnotationTypes("org.kohsuke.stapler.export.Exported")
 @MetaInfServices(Processor.class)
 public class ExportedBeanAnnotationProcessor extends AbstractProcessorImpl {
     @Override
@@ -149,5 +149,5 @@ public class ExportedBeanAnnotationProcessor extends AbstractProcessorImpl {
         return exposedBeanNames;
     }
 
-    private static final String STAPLER_BEAN_FILE = "META-INF/exposed.stapler-beans";
+    static final String STAPLER_BEAN_FILE = "META-INF/exposed.stapler-beans";
 }

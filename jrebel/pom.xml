@@ -3,7 +3,7 @@
   <parent>
     <groupId>org.kohsuke.stapler</groupId>
     <artifactId>stapler-parent</artifactId>
-    <version>1.183-SNAPSHOT</version>
+    <version>1.196-SNAPSHOT</version>
   </parent>
   
   <artifactId>stapler-jrebel</artifactId>
@@ -28,6 +28,11 @@
       <version>2.1.1</version>
       <scope>provided</scope>
     </dependency>
+    <dependency>
+      <groupId>org.kohsuke.metainf-services</groupId>
+      <artifactId>metainf-services</artifactId>
+      <optional>true</optional>
+    </dependency>
   </dependencies>
 
   <!--
@@ -46,4 +51,3 @@
   </repositories>
   -->
 </project>
-
