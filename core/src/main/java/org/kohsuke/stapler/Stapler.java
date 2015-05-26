@@ -32,6 +32,7 @@ import org.apache.commons.beanutils.converters.DoubleConverter;
 import org.apache.commons.beanutils.converters.FloatConverter;
 import org.apache.commons.beanutils.converters.IntegerConverter;
 import org.apache.commons.fileupload.FileItem;
+import org.apache.commons.io.IOUtils;
 import org.kohsuke.stapler.bind.BoundObjectTable;
 
 import javax.servlet.RequestDispatcher;
@@ -44,27 +45,35 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintWriter;
+import java.io.UnsupportedEncodingException;
 import java.lang.reflect.InvocationTargetException;
+import java.net.JarURLConnection;
 import java.net.MalformedURLException;
-import java.net.URI;
-import java.net.URISyntaxException;
+import java.net.SocketException;
 import java.net.URL;
 import java.net.URLConnection;
+import java.net.URLDecoder;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.Stack;
 import java.util.TimeZone;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -90,6 +99,22 @@ public class Stapler extends HttpServlet {
 
     private /*final*/ WebApp webApp;
 
+    /**
+     * All the resources that exist in {@link ServletContext#getResource(String)},
+     * as a cache.
+     *
+     * If this field is null, no cache.
+     */
+    private volatile Map<String,URL> resourcePaths;
+
+    /**
+     * Temporarily updates the thread name to reflect the request being processed.
+     * On by default for convenience, but for webapps that use filters, use
+     * {@link DiagnosticThreadNameFilter} as the first filter and switch this off.
+     */
+    private boolean diagnosticThreadName = true;
+
+
     public @Override void init(ServletConfig servletConfig) throws ServletException {
         super.init(servletConfig);
         this.context = servletConfig.getServletContext();
@@ -103,17 +128,66 @@ public class Stapler extends HttpServlet {
                 webApp.defaultEncodingForStaticResources.put(t.substring(0,idx),t.substring(idx+1));
             }
         }
+        buildResourcePaths();
+        webApp.addStaplerServlet(servletConfig.getServletName(),this);
+
+        String v = servletConfig.getInitParameter("diagnosticThreadName");
+        if (v!=null)
+            diagnosticThreadName = Boolean.parseBoolean(v);
+    }
+
+    /**
+     * Rebuild the internal cache for static resources.
+     */
+    public void buildResourcePaths() {
+        try {
+            if (Boolean.getBoolean(Stapler.class.getName()+".noResourcePathCache")) {
+                resourcePaths = null;
+                return;
+            }
+
+            Map<String,URL> paths = new HashMap<String,URL>();
+            Stack<String> q = new Stack<String>();
+            q.push("/");
+            while (!q.isEmpty()) {
+                String dir = q.pop();
+                Set<String> children = context.getResourcePaths(dir);
+                if (children!=null) {
+                    for (String child : children) {
+                        if (child.endsWith("/"))
+                            q.push(child);
+                        else {
+                            URL v = context.getResource(child);
+                            if (v==null) {
+                                resourcePaths = null;
+                                return; // this can't happen. abort with no cache
+                            }
+                            paths.put(child, v);
+                        }
+                    }
+                }
+            }
+
+            resourcePaths = Collections.unmodifiableMap(paths);
+        } catch (MalformedURLException e) {
+            resourcePaths = null; // abort
+        }
     }
 
     public WebApp getWebApp() {
         return webApp;
     }
 
+    /*package*/ void setWebApp(WebApp webApp) {
+        this.webApp = webApp;
+    }
+
     protected @Override void service(HttpServletRequest req, HttpServletResponse rsp) throws ServletException, IOException {
         Thread t = Thread.currentThread();
         final String oldName = t.getName();
         try {
-            t.setName("Handling "+req.getMethod()+' '+req.getRequestURI()+" : "+oldName);
+            if (diagnosticThreadName)
+                t.setName("Handling "+req.getMethod()+' '+req.getRequestURI()+" : "+oldName);
 
             String servletPath = getServletPath(req);
 
@@ -131,8 +205,10 @@ public class Stapler extends HttpServlet {
             if(servletPath.startsWith("/static/")) {
                 // skip "/static/..../ portion
                 int idx = servletPath.indexOf('/',8);
-                servletPath=servletPath.substring(idx);
-                staticLink = true;
+                if (idx != -1) {
+                    servletPath=servletPath.substring(idx);
+                    staticLink = true;
+                }
             }
 
             String lowerPath = servletPath.toLowerCase(Locale.ENGLISH);
@@ -201,53 +277,136 @@ public class Stapler extends HttpServlet {
         private void close() throws IOException {
             stream.close();
         }
-    }
 
-    private OpenConnection openResourcePathByLocale(HttpServletRequest req,String resourcePath) throws IOException {
-        URL url = getServletContext().getResource(resourcePath);
-        if(url==null)   return null;
-        return selectResourceByLocale(url,req.getLocale());
+        /**
+         * Can't just use {@code connection.getLastModified()} because
+         * of a file descriptor leak in {@code JarURLConnection}.
+         * See http://sourceforge.net/p/freemarker/bugs/189/
+         */
+        public long getLastModified() {
+            if (connection instanceof JarURLConnection) {
+                // There is a bug in sun's jar url connection that causes file handle leaks when calling getLastModified()
+                // Since the time stamps of jar file contents can't vary independent from the jar file timestamp, just use
+                // the jar file timestamp
+                URL jarURL = ((JarURLConnection) connection).getJarFileURL();
+                if (jarURL.getProtocol().equals("file")) {
+                    // Return the last modified time of the underlying file - saves some opening and closing
+                    return new File(jarURL.getFile()).lastModified();
+                } else {
+                    // Use the URL mechanism
+                    URLConnection jarConn = null;
+                    try {
+                        jarConn = jarURL.openConnection();
+                        return jarConn.getLastModified();
+                    } catch (IOException e) {
+                        return -1;
+                    } finally {
+                        if (jarConn != null) {
+                            try {
+                                IOUtils.closeQuietly(jarConn.getInputStream());
+                            } catch (IOException e) {
+                                // ignore this error
+                            }
+                        }
+                    }
+                }
+            } else {
+                return connection.getLastModified();
+            }
+        }
     }
 
     /**
-     * Basically works like {@link URL#openConnection()} but it uses the
-     * locale specific resource if available, by using the given locale.
+     * Logic for performing locale driven resource selection.
      *
-     * <p>
-     * The syntax of the locale specific resource is the same as property file localization.
-     * So Japanese resource for <tt>foo.html</tt> would be named <tt>foo_ja.html</tt>.
+     * Different subtypes provide different meanings for the 'path' parameter.
      */
+    private abstract class LocaleDrivenResourceSelector {
+        /**
+         * The 'path' is divided into the base part and the extension, and the locale-specific
+         * suffix is inserted to the base portion. {@link #map(String)} is used to convert
+         * the combined path into {@link URL}, until we find one that works.
+         *
+         * <p>
+         * The syntax of the locale specific resource is the same as property file localization.
+         * So Japanese resource for <tt>foo.html</tt> would be named <tt>foo_ja.html</tt>.
+         *
+         * @param path
+         *      path/URL-like string that represents the path of the base resource,
+         *      say "foo/bar/index.html" or "file:///a/b/c/d/efg.png"
+         * @param locale
+         *      The preferred locale
+         * @param fallback
+         *      The {@link URL} representation of the {@code path} parameter
+         *      Used as a fallback.
+         */
+        OpenConnection open(String path, Locale locale, URL fallback) throws IOException {
+            String s = path;
+            int idx = s.lastIndexOf('.');
+            if(idx<0)   // no file extension, so no locale switch available
+                return openURL(fallback);
+            String base = s.substring(0,idx);
+            String ext = s.substring(idx);
+            if(ext.indexOf('/')>=0) // the '.' we found was not an extension separator
+                return openURL(fallback);
+
+            OpenConnection con;
+
+            // try locale specific resources first.
+            con = openURL(map(base + '_' + locale.getLanguage() + '_' + locale.getCountry() + '_' + locale.getVariant() + ext));
+            if(con!=null)   return con;
+            con = openURL(map(base+'_'+ locale.getLanguage()+'_'+ locale.getCountry()+ext));
+            if(con!=null)   return con;
+            con = openURL(map(base+'_'+ locale.getLanguage()+ext));
+            if(con!=null)   return con;
+            // default
+            return openURL(fallback);
+        }
+
+        /**
+         * Maps the 'path' into {@link URL}.
+         */
+        abstract URL map(String path) throws IOException;
+    }
+
+    private final LocaleDrivenResourceSelector resourcePathLocaleSelector = new LocaleDrivenResourceSelector() {
+        @Override
+        URL map(String path) throws IOException {
+            return getResource(path);
+        }
+    };
+
+    private OpenConnection openResourcePathByLocale(HttpServletRequest req,String resourcePath) throws IOException {
+        URL url = getResource(resourcePath);
+        if(url==null)   return null;
+
+        // hopefully HotSpot would be able to inline all the virtual calls in here
+        return resourcePathLocaleSelector.open(resourcePath,req.getLocale(),url);
+    }
+
+    /**
+     * {@link LocaleDrivenResourceSelector} that uses a complete URL as 'path'
+     */
+    private final LocaleDrivenResourceSelector urlLocaleSelector = new LocaleDrivenResourceSelector() {
+        @Override
+        URL map(String url) throws IOException {
+            return new URL(url);
+        }
+    };
+
     OpenConnection selectResourceByLocale(URL url, Locale locale) throws IOException {
-        String s = url.toString();
-        int idx = s.lastIndexOf('.');
-        if(idx<0)   // no file extension, so no locale switch available
-            return openURL(url);
-        String base = s.substring(0,idx);
-        String ext = s.substring(idx);
-        if(ext.indexOf('/')>=0) // the '.' we found was not an extension separator
-            return openURL(url);
-
-        OpenConnection con;
-
-        // try locale specific resources first.
-        con = openURL(new URL(base+'_'+ locale.getLanguage()+'_'+ locale.getCountry()+'_'+ locale.getVariant()+ext));
-        if(con!=null)   return con;
-        con = openURL(new URL(base+'_'+ locale.getLanguage()+'_'+ locale.getCountry()+ext));
-        if(con!=null)   return con;
-        con = openURL(new URL(base+'_'+ locale.getLanguage()+ext));
-        if(con!=null)   return con;
-        // default
-        return openURL(url);
+        // hopefully HotSpot would be able to inline all the virtual calls in here
+        return urlLocaleSelector.open(url.toString(),locale,url);
     }
 
     /**
      * Serves the specified {@link URLConnection} as a static resource.
      */
     boolean serveStaticResource(HttpServletRequest req, StaplerResponse rsp, OpenConnection con, long expiration) throws IOException {
-        if(con==null)   return false;
+        if (con == null) return false;
         try {
-            return serveStaticResource(req,rsp, con.stream,
-                    con.connection.getLastModified(),
+            return serveStaticResource(req, rsp, con.stream,
+                    con.getLastModified(),
                     expiration,
                     con.connection.getContentLength(),
                     con.connection.getURL().toString());
@@ -262,7 +421,7 @@ public class Stapler extends HttpServlet {
     boolean serveStaticResource(HttpServletRequest req, StaplerResponse rsp, URL url, long expiration) throws IOException {
         return serveStaticResource(req,rsp,openURL(url),expiration);
     }
-    
+
     /**
      * Opens URL, with error handling to absorb container differences.
      * <p>
@@ -361,6 +520,11 @@ public class Stapler extends HttpServlet {
             String mimeType = getMimeType(fileName);
             rsp.setContentType(mimeType);
 
+            // use nosniff to enforce the content type we are setting above, instead of letting browser
+            // guess it on its own. I found http://security.stackexchange.com/questions/12896/
+            // a comprehensive discussion on this topic
+            rsp.setHeader("X-Content-Type-Options","nosniff");
+
             int idx = fileName.lastIndexOf('.');
             String ext = fileName.substring(idx+1);
 
@@ -391,7 +555,7 @@ public class Stapler extends HttpServlet {
 
                         // ritual for responding to a partial GET
                         rsp.setStatus(HttpServletResponse.SC_PARTIAL_CONTENT);
-                        rsp.setHeader("Content-Range",s+"-"+(e-1)+'/'+contentLength); // end is inclusive.
+                        rsp.setHeader("Content-Range","bytes "+s+"-"+(e-1)+'/'+contentLength); // end is inclusive.
 
                         // prepare to send the partial content
                         DataInputStream dis = new DataInputStream(in);
@@ -451,24 +615,21 @@ public class Stapler extends HttpServlet {
 
     /**
      * If the URL is "file://", return its file representation.
+     *
+     * See http://weblogs.java.net/blog/kohsuke/archive/2007/04/how_to_convert.html
      */
-    private File toFile(URL url) {
+    /*package for test*/ File toFile(URL url) {
         String urlstr = url.toExternalForm();
         if(!urlstr.startsWith("file:"))
             return null;
+
+        //  File(String) does fs.normalize, which is really forgiving in fixing up
+        // malformed stuff. I couldn't make the other URL.toURI() or File(URI) work
+        // in all the cases that we test
         try {
-            //when URL contains escapes like %20, this does the conversion correctly
-            return new File(url.toURI());
-        } catch (URISyntaxException e) {
-            try {
-                // some containers, such as Winstone, doesn't escape ' ', and for those
-                // we need to do this. This method doesn't fail when urlstr contains '%20',
-                // so toURI() has to be tried first.
-                return new File(new URI(null,urlstr,null).getPath());
-            } catch (URISyntaxException _) {
-                // the whole thing could fail anyway.
-                return null;
-            }
+            return new File(URLDecoder.decode(urlstr.substring(5),"UTF-8"));
+        } catch (UnsupportedEncodingException x) {
+            throw new AssertionError(x);
         }
     }
 
@@ -493,7 +654,11 @@ public class Stapler extends HttpServlet {
     }
 
     /**
-     * Try to dispatch the request against the given node, and if it fails, return false.
+     * Try to dispatch the request against the given node, and if there's no route to deliver a request, return false.
+     *
+     * <p>
+     * If a route to deliver a request is found but it failed to handle the request, the request is considered
+     * handled and the method returns true.
      *
      * @see #invoke(RequestImpl, ResponseImpl, Object)
      */
@@ -504,7 +669,15 @@ public class Stapler extends HttpServlet {
         if(node instanceof StaplerProxy) {
             if(traceable())
                 traceEval(req,rsp,node,"((StaplerProxy)",").getTarget()");
-            Object n = ((StaplerProxy)node).getTarget();
+            Object n = null;
+            try {
+                n = ((StaplerProxy)node).getTarget();
+            } catch (RuntimeException e) {
+                if (Function.renderResponse(req,rsp,node,e))
+                    return true; // let the exception serve the request and we are done
+                else
+                    throw e;    // unprocessed exception
+            }
             if(n==node || n==null) {
                 // if the proxy returns itself, assume that it doesn't want to proxy.
                 // if null, no one will handle the request
@@ -516,8 +689,7 @@ public class Stapler extends HttpServlet {
         }
 
         // adds this node to ancestor list
-        AncestorImpl a = new AncestorImpl(req.ancestors);
-        a.set(node,req);
+        AncestorImpl a = new AncestorImpl(req, node);
 
         // try overrides
         if (node instanceof StaplerOverridable) {
@@ -579,7 +751,9 @@ public class Stapler extends HttpServlet {
             }
         } catch (IllegalAccessException e) {
             // this should never really happen
-            getServletContext().log("Error while serving "+req.getRequestURL(),e);
+            if (!isSocketException(e)) {
+                getServletContext().log("Error while serving "+req.getRequestURL(),e);
+            }
             throw new ServletException(e);
         } catch (InvocationTargetException e) {
             Throwable cause = e.getCause();
@@ -596,16 +770,22 @@ public class Stapler extends HttpServlet {
 
             StringBuffer url = req.getRequestURL();
             if (cause instanceof IOException) {
-                getServletContext().log("Error while serving " + url, e);
+                if (!isSocketException(e)) {
+                    getServletContext().log("Error while serving " + url, e);
+                }
                 throw (IOException) cause;
             }
             if (cause instanceof ServletException) {
-                getServletContext().log("Error while serving " + url, e);
+                if (!isSocketException(e)) {
+                    getServletContext().log("Error while serving " + url, e);
+                }
                 throw (ServletException) cause;
             }
             for (Class<?> c = cause.getClass(); c != null; c = c.getSuperclass()) {
                 if (c == Object.class) {
-                    getServletContext().log("Error while serving " + url, e);
+                    if (!isSocketException(e)) {
+                        getServletContext().log("Error while serving " + url, e);
+                    }
                 } else if (c.getName().equals("org.acegisecurity.AccessDeniedException")) {
                     // [HUDSON-4834] A stack trace is too noisy for this; could just need to log in.
                     // (Could consider doing this for all AcegiSecurityException's.)
@@ -619,7 +799,15 @@ public class Stapler extends HttpServlet {
         if(node instanceof StaplerFallback) {
             if(traceable())
                 traceEval(req,rsp,node,"((StaplerFallback)",").getStaplerFallback()");
-            Object n = ((StaplerFallback)node).getStaplerFallback();
+            Object n;
+            try {
+                n = ((StaplerFallback)node).getStaplerFallback();
+            } catch (RuntimeException e) {
+                if (Function.renderResponse(req,rsp,node,e))
+                    return true; // let the exception serve the request and we are done
+                else
+                    throw e;    // unprocessed exception
+            }
             if(n!=node && n!=null) {
                 // delegate to the fallback object
                 invoke(req,rsp,n);
@@ -628,6 +816,35 @@ public class Stapler extends HttpServlet {
         }
 
         return false;
+    }
+
+    /**
+     * Used to detect exceptions thrown when writing content that seem to be due merely to a closed socket.
+     * @param x an exception that got caught
+     * @return true if this looks like a closed stream, false for some real problem
+     * @since 1.222
+     */
+    public static boolean isSocketException(Throwable x) { // JENKINS-10524
+        if (x == null) {
+            return false;
+        }
+        if (x instanceof SocketException) {
+            return true;
+        }
+        if (String.valueOf(x.getMessage()).equals("Broken pipe")) { // TBD I18N
+            return true;
+        }
+        // JENKINS-20074: various things that Jetty and other components could throw
+        if (x instanceof EOFException) {
+            return true;
+        }
+        if (x instanceof IOException && "Closed".equals(x.getMessage())) { // org.eclipse.jetty.server.HttpOutput.print
+            return true;
+        }
+        if (x instanceof IOException && "finished".equals(x.getMessage())) { //com.jcraft.jzlib.DeflaterOutputStream.write
+            return true;
+        }
+        return isSocketException(x.getCause());
     }
 
     /**
@@ -693,12 +910,21 @@ public class Stapler extends HttpServlet {
     private URL getSideFileURL(Object node,String fileName) throws MalformedURLException {
         for( Class c = node.getClass(); c!=Object.class; c=c.getSuperclass() ) {
             String name = "/WEB-INF/side-files/"+c.getName().replace('.','/')+'/'+fileName;
-            URL url = getServletContext().getResource(name);
+            URL url = getResource(name);
             if(url!=null) return url;
         }
         return null;
     }
 
+    /**
+     * {@link ServletContext#getResource(String)} with caching.
+     */
+    private URL getResource(String name) throws MalformedURLException {
+        if (resourcePaths!=null)
+            return resourcePaths.get(name);
+        else
+            return context.getResource(name);
+    }
 
 
     /**
@@ -931,7 +1157,9 @@ public class Stapler extends HttpServlet {
      * This method does not handle whitespace-preserving escape, nor attribute escapes.
      */
     public static String escape(String v) {
-        StringBuffer buf = new StringBuffer(v.length()+64);
+        if (v==null)    return null;
+
+        StringBuilder buf = new StringBuilder(v.length()+64);
         for( int i=0; i<v.length(); i++ ) {
             char ch = v.charAt(i);
             if(ch=='<')
@@ -945,6 +1173,29 @@ public class Stapler extends HttpServlet {
             else
                 buf.append(ch);
         }
+        if (buf.length()==v.length())   return  v;  // unmodified
         return buf.toString();
+    }
+
+    public static Object[] htmlSafeArguments(Object[] args) {
+        for (int i=0; i<args.length; i++)
+            args[i] = htmlSafeArgument(args[i]);
+        return args;
+    }
+
+    /**
+     * For XSS prevention, escape unsafe characters in String by default,
+     * unless it's specifically wrapped in {@link RawHtmlArgument}.
+     */
+    public static Object htmlSafeArgument(Object o) {
+        if (o instanceof RawHtmlArgument)
+            return ((RawHtmlArgument)o).getValue();
+        if (o instanceof Number || o instanceof Calendar || o instanceof Date)
+            // formatting numbers and date often requires that they be kept intact
+            return o;
+        if (o==null)
+            return o;
+
+        return escape(o.toString());
     }
 }

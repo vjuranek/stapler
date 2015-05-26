@@ -1,7 +1,5 @@
 package org.kohsuke.stapler.jsr269;
 
-import com.google.common.collect.LinkedListMultimap;
-import com.google.common.collect.Multimap;
 import org.kohsuke.MetaInfServices;
 import org.kohsuke.stapler.export.Exported;
 
@@ -33,15 +31,24 @@ import java.util.TreeSet;
 @SupportedAnnotationTypes("org.kohsuke.stapler.export.Exported")
 @MetaInfServices(Processor.class)
 public class ExportedBeanAnnotationProcessor extends AbstractProcessorImpl {
+
+    private Set<String> exposedBeanNames;
+
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         try {
             if (roundEnv.processingOver()) {
+                FileObject beans = createResource(STAPLER_BEAN_FILE);
+                PrintWriter w = new PrintWriter(new OutputStreamWriter(beans.openOutputStream(), "UTF-8"));
+                for (String beanName : exposedBeanNames) {
+                    w.println(beanName);
+                }
+                w.close();
                 return false;
             }
 
             // collect all exposed properties
-            Multimap<TypeElement, Element/*member decls*/> props = LinkedListMultimap.create();
+            PoormansMultimap<TypeElement, Element/*member decls*/> props = new PoormansMultimap<TypeElement,Element>();
 
             for (Element exported : roundEnv.getElementsAnnotatedWith(Exported.class)) {
                 Element type = exported.getEnclosingElement();
@@ -50,8 +57,9 @@ public class ExportedBeanAnnotationProcessor extends AbstractProcessorImpl {
                 }
             }
 
-
-            Set<String> exposedBeanNames = scanExisting();
+            if (exposedBeanNames == null) {
+                scanExisting();
+            }
 
             for (Entry<TypeElement, Collection<Element>> e : props.asMap().entrySet()) {
                 exposedBeanNames.add(e.getKey().getQualifiedName().toString());
@@ -113,12 +121,6 @@ public class ExportedBeanAnnotationProcessor extends AbstractProcessorImpl {
                 writePropertyFile(javadocs, javadocFile);
             }
 
-            FileObject beans = createResource(STAPLER_BEAN_FILE);
-            PrintWriter w = new PrintWriter(new OutputStreamWriter(beans.openOutputStream(),"UTF-8"));
-            for (String beanName : exposedBeanNames)
-                w.println(beanName);
-            w.close();
-
         } catch (IOException x) {
             error(x);
         } catch (RuntimeException e) {
@@ -132,8 +134,8 @@ public class ExportedBeanAnnotationProcessor extends AbstractProcessorImpl {
         return false;
     }
 
-    private Set<String> scanExisting() throws IOException {
-        Set<String> exposedBeanNames = new TreeSet<String>();
+    private void scanExisting() throws IOException {
+        exposedBeanNames = new TreeSet<String>();
 
         try {
             FileObject beans = getResource(STAPLER_BEAN_FILE);
@@ -145,8 +147,6 @@ public class ExportedBeanAnnotationProcessor extends AbstractProcessorImpl {
         } catch (FileNotFoundException e) {
             // no existing file, which is fine
         }
-
-        return exposedBeanNames;
     }
 
     static final String STAPLER_BEAN_FILE = "META-INF/exposed.stapler-beans";

@@ -28,18 +28,33 @@ import java.io.ByteArrayOutputStream;
 import java.io.UnsupportedEncodingException;
 
 /**
- * Tokenized strings.
+ * Tokenized path portion of the URL.
+ *
+ * For example "foo/bar/zot" is treated as ["foo","bar","zot"]
  *
  * @author Kohsuke Kawaguchi
  */
 public final class TokenList {
-    public final String[] tokens, rawTokens;
+    /**
+     * URL-decoded tokens.
+     */
+    public final String[] tokens;
+    /**
+     * Like {@link #tokens} but before decoding.
+     */
+    public final String[] rawTokens;
     /**
      * Index of the next token.
      */
     public int idx;
 
+    /**
+     * If the request URL ends with the path separator.
+     */
+    public final boolean endsWithSlash;
+
     TokenList(String url) {
+        // to avoid a directory traversal vulnerability in Windows, treat '\\' as a path separator just like '/'
         StringTokenizer tknzr = new StringTokenizer(url,"/\\");
         final int tokenCount = tknzr.countTokens();
         tokens = new String[tokenCount];
@@ -50,6 +65,7 @@ public final class TokenList {
             if (tokens[i].equals(".."))
                 throw new IllegalArgumentException(url);
         }
+        endsWithSlash = url.endsWith("/") || url.endsWith("\\");
     }
 
     public boolean hasMore() {
@@ -70,12 +86,23 @@ public final class TokenList {
         return tokens[--idx];
     }
     public int nextAsInt() throws NumberFormatException {
+        long asLongValue = nextAsLong();
+        if (asLongValue < Integer.MIN_VALUE) {
+            throw new NumberFormatException(String.format("Token '%d' cannot be interpreted as an integer as its value is less than %d.", asLongValue, Integer.MIN_VALUE));
+        } else if (asLongValue > Integer.MAX_VALUE) {
+            throw new NumberFormatException(String.format("Token '%d' cannot be interpreted as an integer as its value is greater than %d.", asLongValue, Integer.MAX_VALUE));
+        }
+
+        return (int) asLongValue;
+    }
+    public long nextAsLong() throws NumberFormatException {
         String p = peek();
-        if(p==null)
+        if(p == null) {
             throw new NumberFormatException();  // no more token
-        int i = Integer.valueOf(p);
+        }
+        long asLongValue = Long.valueOf(p);
         idx++;
-        return i;
+        return asLongValue;
     }
 
     public int length() {

@@ -92,6 +92,16 @@ public interface StaplerRequest extends HttpServletRequest {
     ServletContext getServletContext();
 
     /**
+     * {@link #getRequestURI()} plus additional query string part, if it exists.
+     */
+    String getRequestURIWithQueryString();
+
+    /**
+     * {@link #getRequestURL()} plus additional query string part, if it exists.
+     */
+    StringBuffer getRequestURLWithQueryString();
+
+    /**
      * Gets the {@link RequestDispatcher} that represents a specific view
      * for the given object.
      *
@@ -277,6 +287,11 @@ public interface StaplerRequest extends HttpServletRequest {
      *
      * So for example, if the prefix is "foo.", then property name "foo.bar" with value
      * "zot" will invoke <tt>bean.setBar("zot")</tt>.
+     *
+     *
+     * @deprecated
+     *      Instead of using prefix to group object among form parameter names,
+     *      use structured form submission and {@link #bindJSON(Class, JSONObject)}.
      */
     void bindParameters( Object bean, String prefix );
 
@@ -305,15 +320,20 @@ public interface StaplerRequest extends HttpServletRequest {
      *
      * @return
      *      Can be empty but never null.
+     *
+     *
+     * @deprecated
+     *      Instead of using prefix to group object among form parameter names,
+     *      use structured form submission and {@link #bindJSON(Class, JSONObject)}.
      */
     <T>
     List<T> bindParametersToList( Class<T> type, String prefix );
 
     /**
-     * Instanciates a new object by injecting constructor parameters from the form parameters.
+     * Instantiates a new object by injecting constructor parameters from the form parameters.
      *
      * <p>
-     * The given class must have a constructor annotated with '@stapler-constructor',
+     * The given class must have a constructor annotated with '&#64;stapler-constructor',
      * and must be processed by the maven-stapler-plugin, so that the parameter names
      * of the constructor is available at runtime.
      *
@@ -322,6 +342,10 @@ public interface StaplerRequest extends HttpServletRequest {
      * if the prefix is "foo." and if the constructor is define as
      * <code>Foo(String a, String b)</code>, then the constructor will be invoked
      * as <code>new Foo(getParameter("foo.a"),getParameter("foo.b"))</code>.
+     *
+     * @deprecated
+     *      Instead of using prefix to group object among form parameter names,
+     *      use structured form submission and {@link #bindJSON(Class, JSONObject)}.
      */
     <T>
     T bindParameters( Class<T> type, String prefix );
@@ -332,6 +356,11 @@ public interface StaplerRequest extends HttpServletRequest {
      *
      * <p>
      * This is useful for creating multiple instances from repeated form fields.
+     *
+     *
+     * @deprecated
+     *      Instead of using prefix to group object among form parameter names,
+     *      use structured form submission and {@link #bindJSON(Class, JSONObject)}.
      */
     <T>
     T bindParameters( Class<T> type, String prefix, int index );
@@ -366,7 +395,7 @@ public interface StaplerRequest extends HttpServletRequest {
      * <h3>Sub-typing</h3>
      * <p>
      * In the above example, a new instance of <tt>Bar</tt> was created,
-     * but you can also create a subtype of Bar by having the 'stapler-class' property in
+     * but you can also create a subtype of Bar by having the '$class' property in
      * JSON like this:
      *
      * <pre>
@@ -375,7 +404,7 @@ public interface StaplerRequest extends HttpServletRequest {
      *   public BarEx(int a, int b, int c) {}
      * }
      *
-     * { y:"text", z:true, bar: { stapler-class:"p.k.g.BarEx", a:1, b:2, c:3 } }
+     * { y:"text", z:true, bar: { $class:"p.k.g.BarEx", a:1, b:2, c:3 } }
      * </pre>
      *
      * <p>
@@ -427,10 +456,24 @@ public interface StaplerRequest extends HttpServletRequest {
 
     /**
      * Gets the {@link BindInterceptor} set for this request.
+     *
+     * @see WebApp#bindInterceptors
      */
     BindInterceptor getBindInterceptor();
 
+    /**
+     * @deprecated
+     * Typo. Use {@link #setBindInterceptor(BindInterceptor)}
+     */
     BindInterceptor setBindListener(BindInterceptor bindListener);
+
+    /**
+     * @deprecated
+     * Typo. Use {@link #setBindInterceptor(BindInterceptor)}
+     */
+    BindInterceptor setBindInterceptpr(BindInterceptor bindListener);
+
+    BindInterceptor setBindInterceptor(BindInterceptor bindListener);
 
     /**
      * Gets the content of the structured form submission.

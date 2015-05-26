@@ -27,13 +27,16 @@ import net.sf.json.JSONObject;
 import org.kohsuke.stapler.bind.BoundObjectTable;
 import org.kohsuke.stapler.lang.Klass;
 
+import javax.servlet.Filter;
+import javax.servlet.ServletConfig;
 import javax.servlet.ServletContext;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Vector;
-import java.util.WeakHashMap;
 import java.util.Hashtable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -76,7 +79,7 @@ public class WebApp {
     public final Map<Class,Class[]> wrappers = new HashMap<Class,Class[]>();
 
     /**
-     * MIME type -> encoding map that determines how static contents in the war file is served.
+     * MIME type → encoding map that determines how static contents in the war file is served.
      */
     public final Map<String,String> defaultEncodingForStaticResources = new HashMap<String,String>();
 
@@ -86,6 +89,15 @@ public class WebApp {
      * TODO: is this really mutable?
      */
     public final List<Facet> facets = new Vector<Facet>();
+
+    /**
+     * Global {@link BindInterceptor}s.
+     *
+     * These are consulted after {@link StaplerRequest#getBindInterceptor()} is consulted.
+     * Global bind interceptors are useful to register webapp-wide conversion logic local to the application.
+     * @since 1.220
+     */
+    public final List<BindInterceptor> bindInterceptors = new CopyOnWriteArrayList<BindInterceptor>();
 
     /**
      * MIME type mapping from extensions (like "txt" or "jpg") to MIME types ("foo/bar").
@@ -100,9 +112,9 @@ public class WebApp {
     /**
      * All {@link MetaClass}es.
      *
-     * Avoids class leaks by {@link WeakHashMap}.
+     * Note that this permanently holds a strong reference to its key, i.e. is a memory leak.
      */
-    private final Map<Klass<?>,MetaClass> classMap = new WeakHashMap<Klass<?>,MetaClass>();
+    private final Map<Klass<?>,MetaClass> classMap = new HashMap<Klass<?>,MetaClass>();
 
     /**
      * Handles objects that are exported.
@@ -112,6 +124,15 @@ public class WebApp {
     private final CopyOnWriteArrayList<HttpResponseRenderer> responseRenderers = new CopyOnWriteArrayList<HttpResponseRenderer>();
 
     private CrumbIssuer crumbIssuer = CrumbIssuer.DEFAULT;
+
+    /**
+     * Provides access to {@link Stapler} servlet instances. This is useful
+     * for sending a request over to stapler from a context outside Stapler,
+     * such as in {@link Filter}.
+     *
+     * Keyed by {@link ServletConfig#getServletName()}.
+     */
+    private final ConcurrentMap<String,Stapler> servlets = new ConcurrentHashMap<String,Stapler>();
 
     public WebApp(ServletContext context) {
         this.context = context;
@@ -222,6 +243,36 @@ public class WebApp {
                     t.clearScripts();
             }
         }
+    }
+
+    void addStaplerServlet(String servletName, Stapler servlet) {
+        if (servletName==null)  servletName=""; // be defensive
+        servlets.put(servletName,servlet);
+    }
+
+    /**
+     * Gets a reference to some {@link Stapler} servlet in this webapp.
+     *
+     * <p>
+     * Most Stapler webapps will have one {@code <servlet>} entry in web.xml
+     * and if that's the case, that'd be returned. In a fully general case,
+     * a webapp can have multiple servlets and more than one of them can be
+     * {@link Stapler}. This method returns one of those. Which one gets
+     * returned is unspecified.
+     *
+     * <p>
+     * This method is useful if you are in a {@link Filter} and using
+     * Stapler to handle the current request. For example,
+     *
+     * <pre>
+     * WebApp.get(servletContext).getSomeStapler().invoke(
+     *     request,response,
+     *     someJavaObject,
+     *     "/path/to/dispatch/request");
+     * </pre>
+     */
+    public Stapler getSomeStapler() {
+        return servlets.values().iterator().next();
     }
 
     /**

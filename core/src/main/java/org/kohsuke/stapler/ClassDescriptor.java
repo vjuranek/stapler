@@ -24,13 +24,14 @@
 package org.kohsuke.stapler;
 
 import org.apache.commons.io.IOUtils;
-import org.kohsuke.asm3.ClassReader;
-import org.kohsuke.asm3.Label;
-import org.kohsuke.asm3.MethodVisitor;
-import org.kohsuke.asm3.Type;
-import org.kohsuke.asm3.commons.EmptyVisitor;
+import org.kohsuke.asm5.ClassReader;
+import org.kohsuke.asm5.ClassVisitor;
+import org.kohsuke.asm5.Label;
+import org.kohsuke.asm5.MethodVisitor;
+import org.kohsuke.asm5.Type;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -38,11 +39,13 @@ import java.lang.reflect.Modifier;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 import java.util.TreeMap;
 import java.util.logging.Logger;
 
 import static java.util.logging.Level.FINE;
 import static java.util.logging.Level.WARNING;
+import static org.kohsuke.asm5.Opcodes.ASM5;
 
 /**
  * Reflection information of a {@link Class}.
@@ -152,6 +155,58 @@ public final class ClassDescriptor {
     }
 
     /**
+     * Determines the constructor parameter names.
+     *
+     * <p>
+     * First, try to load names from the debug information. Otherwise
+     * if there's the .stapler file, load it as a property file and determines the constructor parameter names.
+     * Otherwise, look for {@link CapturedParameterNames} annotation.
+     */
+    public String[] loadConstructorParamNames() {
+        Constructor<?>[] ctrs = clazz.getConstructors();
+        // which constructor was data bound?
+        Constructor<?> dbc = null;
+        for (Constructor<?> c : ctrs) {
+            if (c.getAnnotation(DataBoundConstructor.class) != null) {
+                dbc = c;
+                break;
+            }
+        }
+
+        if (dbc==null)
+            throw new NoStaplerConstructorException("There's no @DataBoundConstructor on any constructor of " + clazz);
+
+        String[] names = ClassDescriptor.loadParameterNames(dbc);
+        if (names.length==dbc.getParameterTypes().length)
+            return names;
+
+        String resourceName = clazz.getName().replace('.', '/').replace('$','/') + ".stapler";
+        ClassLoader cl = clazz.getClassLoader();
+        if(cl==null)
+            throw new NoStaplerConstructorException(clazz+" is a built-in type");
+        InputStream s = cl.getResourceAsStream(resourceName);
+        if (s != null) {// load the property file and figure out parameter names
+            try {
+                Properties p = new Properties();
+                p.load(s);
+                s.close();
+
+                String v = p.getProperty("constructor");
+                if (v.length() == 0) return new String[0];
+                return v.split(",");
+            } catch (IOException e) {
+                throw new IllegalArgumentException("Unable to load " + resourceName, e);
+            }
+        }
+
+        // no debug info and no stapler file
+        throw new NoStaplerConstructorException(
+                "Unable to find " + resourceName + ". " +
+                        "Run 'mvn clean compile' once to run the annotation processor.");
+    }
+
+
+    /**
      * Isolate the ASM dependency to its own class, as otherwise this seems to cause linkage error on the whole {@link ClassDescriptor}.
      */
     private static class ASM {
@@ -167,13 +222,13 @@ public final class ClassDescriptor {
 
             final TreeMap<Integer,String> localVars = new TreeMap<Integer,String>();
             ClassReader r = new ClassReader(clazz.openStream());
-            r.accept(new EmptyVisitor() {
+            r.accept(new ClassVisitor(ASM5) {
                 final String md = Type.getMethodDescriptor(m);
                 // First localVariable is "this" for non-static method
                 final int limit = (m.getModifiers() & Modifier.STATIC) != 0 ? 0 : 1;
                 @Override public MethodVisitor visitMethod(int access, String methodName, String desc, String signature, String[] exceptions) {
                     if (methodName.equals(m.getName()) && desc.equals(md))
-                        return new EmptyVisitor() {
+                        return new MethodVisitor(ASM5) {
                             @Override public void visitLocalVariable(String name, String desc, String signature, Label start, Label end, int index) {
                                 if (index >= limit)
                                     localVars.put(index, name);
@@ -204,21 +259,26 @@ public final class ClassDescriptor {
             if (clazz==null)    return null;
 
             final TreeMap<Integer,String> localVars = new TreeMap<Integer,String>();
-            ClassReader r = new ClassReader(clazz.openStream());
-            r.accept(new EmptyVisitor() {
-                final String md = getConstructorDescriptor(m);
-                public MethodVisitor visitMethod(int access, String methodName, String desc, String signature, String[] exceptions) {
-                    if (methodName.equals("<init>") && desc.equals(md))
-                        return new EmptyVisitor() {
-                            @Override public void visitLocalVariable(String name, String desc, String signature, Label start, Label end, int index) {
-                                if (index>0)   // 0 is 'this'
-                                    localVars.put(index, name);
-                            }
-                        };
-                    else
-                        return null; // ignore this method
-                }
-            }, 0);
+            InputStream is = clazz.openStream();
+            try {
+                ClassReader r = new ClassReader(is);
+                r.accept(new ClassVisitor(ASM5) {
+                    final String md = getConstructorDescriptor(m);
+                    public MethodVisitor visitMethod(int access, String methodName, String desc, String signature, String[] exceptions) {
+                        if (methodName.equals("<init>") && desc.equals(md))
+                            return new MethodVisitor(ASM5) {
+                                @Override public void visitLocalVariable(String name, String desc, String signature, Label start, Label end, int index) {
+                                    if (index>0)   // 0 is 'this'
+                                        localVars.put(index, name);
+                                }
+                            };
+                        else
+                            return null; // ignore this method
+                    }
+                }, 0);
+            } finally {
+                is.close();
+            }
 
             // Indexes may not be sequential, but first set of local variables are method params
             int i = 0;

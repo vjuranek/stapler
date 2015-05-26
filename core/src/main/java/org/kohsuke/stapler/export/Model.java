@@ -32,8 +32,14 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import javax.annotation.CheckForNull;
+import javax.annotation.Nullable;
 
 /**
  * Writes all the property of one {@link ExportedBean} to {@link DataWriter}.
@@ -61,12 +67,13 @@ public class Model<T> {
      */
     private volatile Properties javadoc;
 
-    /*package*/ Model(ModelBuilder parent, Class<T> type) {
+    /*package*/ Model(ModelBuilder parent, Class<T> type, @CheckForNull Class<?> propertyOwner, @Nullable String property) throws NotExportableException {
         this.parent = parent;
         this.type = type;
         ExportedBean eb = type.getAnnotation(ExportedBean.class);
-        if(eb ==null)
-            throw new NotExportableException(type);
+        if (eb == null) {
+            throw propertyOwner != null ? new NotExportableException(type, propertyOwner, property) : new NotExportableException(type);
+        }
         this.defaultVisibility = eb.defaultVisibility();
         
         Class<? super T> sc = type.getSuperclass();
@@ -88,8 +95,13 @@ public class Model<T> {
         for( Method m : type.getMethods() ) {
             if(m.getDeclaringClass()!=type) continue;
             Exported exported = m.getAnnotation(Exported.class);
-            if(exported !=null)
-                properties.add(new MethodProperty(this,m, exported));
+            if(exported !=null) {
+                if (m.getParameterTypes().length > 0) {
+                    LOGGER.log(Level.WARNING, "Method " + m.getName() + " of " + type.getName() + " is annotated @Exported but requires arguments");
+                } else {
+                    properties.add(new MethodProperty(this,m, exported));
+                }
+            }
         }
 
         this.properties = properties.toArray(new Property[properties.size()]);
@@ -149,7 +161,7 @@ public class Model<T> {
      */
     public void writeTo(T object, TreePruner pruner, DataWriter writer) throws IOException {
         writer.startObject();
-        writeNestedObjectTo(object,pruner,writer);
+        writeNestedObjectTo(object, pruner, writer, Collections.<String>emptySet());
         writer.endObject();
     }
 
@@ -160,7 +172,7 @@ public class Model<T> {
      *      This parameters controls how much data we'd be writing,
      *      by adding bias to the sub tree cutting.
      *      A property with {@link Exported#visibility() visibility} X will be written
-     *      if the current depth Y and baseVisibility Z satisfies X+Z>Y.
+     *      if the current depth Y and baseVisibility Z satisfies {@code X + Z > Y}.
      *
      *      0 is the normal value. Positive value means writing bigger tree,
      *      and negative value means writing smaller trees.
@@ -171,11 +183,21 @@ public class Model<T> {
         writeTo(object,new ByDepth(1-baseVisibility),writer);
     }
 
-    void writeNestedObjectTo(T object, TreePruner pruner, DataWriter writer) throws IOException {
-        if(superModel !=null)
-            superModel.writeNestedObjectTo(object,pruner,writer);
+    void writeNestedObjectTo(T object, TreePruner pruner, DataWriter writer, Set<? extends String> blacklist) throws IOException {
+        if (superModel != null) {
+            Set<String> superBlacklist = new HashSet<String>(blacklist);
+            for (Property p : properties) {
+                superBlacklist.add(p.name);
+            }
+            superModel.writeNestedObjectTo(object, pruner, writer, superBlacklist);
+        }
 
-        for (Property p : properties)
-            p.writeTo(object,pruner,writer);
+        for (Property p : properties) {
+            if (!blacklist.contains(p.name)) {
+                p.writeTo(object,pruner,writer);
+            }
+        }
     }
+
+    private static final Logger LOGGER = Logger.getLogger(Model.class.getName());
 }

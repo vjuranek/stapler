@@ -1,28 +1,26 @@
 package org.kohsuke.stapler;
 
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
-import junit.framework.TestCase;
+import javax.servlet.ServletException;
+import static org.junit.Assert.*;
+import org.junit.Test;
 
 /**
  * @author Alan Harder
  */
-public class ClassDescriptorTest extends TestCase {
-    public ClassDescriptorTest() {
-    }
+public class ClassDescriptorTest {
 
-    public ClassDescriptorTest(int a, int b, String x) {
-    }
-
-    public void testLoadConstructorParam() throws Exception {
-        assertEquals(0,ClassDescriptor.loadParameterNames(getClass().getConstructor()).length);
-        String[] names = ClassDescriptor.loadParameterNames(getClass().getConstructor(int.class, int.class, String.class));
+    @Test public void loadConstructorParam() throws Exception {
+        assertEquals(0,ClassDescriptor.loadParameterNames(C.class.getConstructor()).length);
+        String[] names = ClassDescriptor.loadParameterNames(C.class.getConstructor(int.class, int.class, String.class));
         assertEquals("[a, b, x]",Arrays.asList(names).toString());
     }
 
-    public void testLoadParametersFromAsm() throws Exception {
+    @Test public void loadParametersFromAsm() throws Exception {
         // get private method that is being tested
         Method lpfa = ClassDescriptor.class.getDeclaredClasses()[0].getDeclaredMethod(
                 "loadParametersFromAsm", Method.class);
@@ -52,9 +50,25 @@ public class ClassDescriptorTest extends TestCase {
         }
     }
 
+    @Test public void inheritedWebMethods() throws Exception {
+        // http://bugs.sun.com/view_bug.do?bug_id=6342411
+        assertEquals(1, new ClassDescriptor(Sub.class).methods.name("doDynamic").signature(StaplerRequest.class, StaplerResponse.class).size());
+    }
+
+    public static class C {
+        public C() {}
+        public C(int a, int b, String x) {}
+    }
+
     private void methodWithNoParams() { }
     private static void methodWithNoParams_static() { }
     private void methodWithManyParams(String a, boolean b, int c, long d,
             Boolean e, Integer f, Long g, Object h, ClassDescriptorTest i) { }
     private static void methodWithParams_static(String abc, long def, Object ghi) { }
+
+    protected static abstract class Super {
+        public void doDynamic(StaplerRequest req, StaplerResponse rsp) throws IOException, ServletException {}
+    }
+    public static class Sub extends Super {}
+
 }

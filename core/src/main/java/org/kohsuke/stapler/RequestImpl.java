@@ -25,6 +25,8 @@ package org.kohsuke.stapler;
 
 import net.sf.json.JSON;
 import net.sf.json.JSONArray;
+import net.sf.json.JSONException;
+import net.sf.json.JSONNull;
 import net.sf.json.JSONObject;
 import org.apache.commons.beanutils.BeanUtils;
 import org.apache.commons.beanutils.ConvertUtils;
@@ -37,6 +39,7 @@ import org.apache.commons.fileupload.servlet.ServletFileUpload;
 import org.jvnet.tiger_types.Lister;
 import org.kohsuke.stapler.bind.BoundObjectTable;
 import org.kohsuke.stapler.lang.Klass;
+import org.kohsuke.stapler.lang.MethodRef;
 
 import javax.servlet.RequestDispatcher;
 import javax.servlet.ServletContext;
@@ -44,10 +47,8 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletRequestWrapper;
 import javax.servlet.http.HttpServletResponse;
-import static javax.servlet.http.HttpServletResponse.SC_BAD_REQUEST;
 import java.beans.PropertyDescriptor;
 import java.io.IOException;
-import java.io.InputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -58,15 +59,19 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import java.util.StringTokenizer;
+import java.util.logging.Logger;
+
+import static java.util.logging.Level.*;
+import static javax.servlet.http.HttpServletResponse.*;
 
 /**
  * {@link StaplerRequest} implementation.
@@ -145,6 +150,20 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
 
     public ServletContext getServletContext() {
         return stapler.getServletContext();
+    }
+
+    public String getRequestURIWithQueryString() {
+        String s = getRequestURI();
+        String q = getQueryString();
+        if (q!=null)    s+='?'+q;
+        return s;
+    }
+
+    public StringBuffer getRequestURLWithQueryString() {
+        StringBuffer s = getRequestURL();
+        String q = getQueryString();
+        if (q!=null)    s.append('?').append(q);
+        return s;
     }
 
     public RequestDispatcher getView(Object it,String viewName) throws IOException {
@@ -273,6 +292,14 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
     }
 
     public BindInterceptor setBindListener(BindInterceptor bindListener) {
+        return setBindInterceptor(bindListener);
+    }
+
+    public BindInterceptor setBindInterceptpr(BindInterceptor bindListener) {
+        return setBindInterceptor(bindListener);
+    }
+
+    public BindInterceptor setBindInterceptor(BindInterceptor bindListener) {
         BindInterceptor o = this.bindInterceptor;
         this.bindInterceptor = bindListener;
         return o;
@@ -308,7 +335,7 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
             return r;   // nothing
 
         try {
-            loadConstructorParamNames(type);
+            new ClassDescriptor(type).loadConstructorParamNames();
             // use the designated constructor for databinding
             for( int i=0; i<len; i++ )
                 r.add(bindParameters(type,prefix,i));
@@ -341,7 +368,7 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
     }
 
     public <T> T bindParameters(Class<T> type, String prefix, int index) {
-        String[] names = loadConstructorParamNames(type);
+        String[] names = new ClassDescriptor(type).loadConstructorParamNames();
 
         // the actual arguments to invoke the constructor with.
         Object[] args = new Object[names.length];
@@ -462,57 +489,6 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
         throw new IllegalArgumentException(type+" does not have a constructor with "+length+" arguments");
     }
 
-    /**
-     * Determines the constructor parameter names.
-     *
-     * <p>
-     * First, try to load names from the debug information. Otherwise
-     * if there's the .stapler file, load it as a property file and determines the constructor parameter names.
-     * Otherwise, look for {@link CapturedParameterNames} annotation.
-     */
-    private String[] loadConstructorParamNames(Class<?> type) {
-        Constructor<?>[] ctrs = type.getConstructors();
-        // which constructor was data bound?
-        Constructor<?> dbc = null;
-        for (Constructor<?> c : ctrs) {
-            if (c.getAnnotation(DataBoundConstructor.class) != null) {
-                dbc = c;
-                break;
-            }
-        }
-
-        if (dbc==null)
-            throw new NoStaplerConstructorException("There's no @DataBoundConstructor on any constructor of " + type);
-
-        String[] names = ClassDescriptor.loadParameterNames(dbc);
-        if (names.length==dbc.getParameterTypes().length)
-            return names;
-
-        String resourceName = type.getName().replace('.', '/').replace('$','/') + ".stapler";
-        ClassLoader cl = type.getClassLoader();
-        if(cl==null)
-            throw new NoStaplerConstructorException(type+" is a built-in type");
-        InputStream s = cl.getResourceAsStream(resourceName);
-        if (s != null) {// load the property file and figure out parameter names
-            try {
-                Properties p = new Properties();
-                p.load(s);
-                s.close();
-
-                String v = p.getProperty("constructor");
-                if (v.length() == 0) return new String[0];
-                return v.split(",");
-            } catch (IOException e) {
-                throw new IllegalArgumentException("Unable to load " + resourceName, e);
-            }
-        }
-
-        // no debug info and no stapler file
-        throw new NoStaplerConstructorException(
-                "Unable to find " + resourceName + ". " +
-                        "Run 'mvn clean compile' once to run the annotation processor.");
-    }
-
     private static void fill(Object bean, String key, Object value) {
         StringTokenizer tokens = new StringTokenizer(key);
         while(tokens.hasMoreTokens()) {
@@ -565,9 +541,14 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
          */
         public Object convertJSON(Object o) {
             Object r = bindInterceptor.onConvert(genericType, type, o);
-            if (r!= BindInterceptor.DEFAULT)    return r; // taken over by the listener
+            if (r!= BindInterceptor.DEFAULT)    return r; // taken over by the interceptor
 
-            if(o==null) {
+            for (BindInterceptor i : getWebApp().bindInterceptors) {
+                r = i.onConvert(genericType, type, o);
+                if (r!= BindInterceptor.DEFAULT)    return r; // taken over by the interceptor
+            }
+
+            if(o==null || o instanceof JSONNull) {
                 // this method returns null if the type is not primitive, which works.
                 return ReflectionUtils.getVmDefaultValueFor(type);
             }
@@ -591,12 +572,21 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
                 if(l==null) {// single value conversion
                     try {
                         Class actualType = type;
+                        String className = null;
                         if(j.has("stapler-class")) {
+                            // deprecated as of 2.4-jenkins-4 but left here for a while until we are sure nobody uses this
+                            className = j.getString("stapler-class");
+                            LOGGER.log(FINE, "stapler-class is deprecated in favor of $class: {0}", className);
+                        }
+                        if(j.has("$class")) {
+                            className = j.getString("$class");
+                        }
+
+                        if (className != null) {
                             // sub-type is specified in JSON.
                             // note that this can come from malicious clients, so we need to make sure we don't have security issues.
 
                             ClassLoader cl = stapler.getWebApp().getClassLoader();
-                            String className = j.getString("stapler-class");
                             try {
                                 Class<?> subType = cl.loadClass(className);
                                 if(!actualType.isAssignableFrom(subType))
@@ -607,28 +597,7 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
                             }
                         }
 
-                        if (actualType==JSONObject.class || actualType==JSON.class) return actualType.cast(j);
-
-                        String[] names = loadConstructorParamNames(actualType);
-
-                        // the actual arguments to invoke the constructor with.
-                        Object[] args = new Object[names.length];
-
-                        // constructor
-                        Constructor c = findConstructor(actualType, names.length);
-                        Class[] types = c.getParameterTypes();
-                        Type[] genTypes = c.getGenericParameterTypes();
-
-                        // convert parameters
-                        for( int i=0; i<names.length; i++ ) {
-                            try {
-                                args[i] = bindJSON(genTypes[i],types[i],j.get(names[i]));
-                            } catch (IllegalArgumentException e) {
-                                throw new IllegalArgumentException("Failed to convert the "+names[i]+" parameter of the constructor "+c,e);
-                            }
-                        }
-
-                        return invokeConstructor(c, args);
+                        return instantiate(actualType, j);
                     } catch (IllegalArgumentException e) {
                         throw new IllegalArgumentException("Failed to instantiate "+type+" from "+j,e);
                     }
@@ -691,12 +660,138 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
             } else {// single value in a collection
                 Converter converter = Stapler.lookupConverter(l.itemType);
                 if (converter==null)
-                    throw new IllegalArgumentException("Unable to convert to "+type);
+                    throw new IllegalArgumentException("Unable to convert to "+l.itemType);
 
                 l.add(converter.convert(type,o));
                 return l.toCollection();
             }
         }
+    }
+
+    /**
+     * Called after the actual type of the binding is figured out.
+     */
+    private Object instantiate(Class actualType, JSONObject j) {
+        Object r = bindInterceptor.instantiate(actualType,j);
+        if (r!=BindInterceptor.DEFAULT) return r;
+        for (BindInterceptor bi : getWebApp().bindInterceptors) {
+            r = bi.instantiate(actualType,j);
+            if (r!=BindInterceptor.DEFAULT) return r;
+        }
+
+        if (actualType==JSONObject.class || actualType==JSON.class) return actualType.cast(j);
+
+        String[] names = new ClassDescriptor(actualType).loadConstructorParamNames();
+
+        // the actual arguments to invoke the constructor with.
+        Object[] args = new Object[names.length];
+
+        // constructor
+        Constructor c = findConstructor(actualType, names.length);
+        Class[] types = c.getParameterTypes();
+        Type[] genTypes = c.getGenericParameterTypes();
+
+        // convert parameters
+        for( int i=0; i<names.length; i++ ) {
+            try {
+                args[i] = bindJSON(genTypes[i],types[i],j.get(names[i]));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Failed to convert the "+names[i]+" parameter of the constructor "+c,e);
+            }
+        }
+
+        Object o = injectSetters(invokeConstructor(c, args), j, Arrays.asList(names));
+        o = bindResolve(o,j);
+
+        return o;
+    }
+
+    /**
+     * Calls {@link DataBoundResolvable#bindResolve(StaplerRequest, JSONObject)} if the object has it.
+     */
+    private Object bindResolve(Object o, JSONObject src) {
+        if (o instanceof DataBoundResolvable) {
+            DataBoundResolvable dbr = (DataBoundResolvable) o;
+            o = dbr.bindResolve(this,src);
+        }
+        return o;
+    }
+
+    /**
+     * Performs {@link DataBoundSetter} injections.
+     *
+     * @param exclusions
+     *      Properties that are already injected through the constructor, thus not subject of the setter injection.
+     */
+    private <T> T injectSetters(T r, JSONObject j, Collection<String> exclusions) {
+        // try to assign rest of the properties
+        OUTER:
+        for (String key : (Set<String>)j.keySet()) {
+            if (!exclusions.contains(key)) {
+                try {
+                    // try field injection first
+                    for (Class c=r.getClass(); c!=null; c=c.getSuperclass()) {
+                        try {
+                            Field f = c.getDeclaredField(key);
+                            if (f.getAnnotation(DataBoundSetter.class)!=null) {
+                                f.setAccessible(true);
+                                f.set(r, bindJSON(f.getGenericType(), f.getType(), j.get(key)));
+                                continue OUTER;
+                            }
+                        } catch (NoSuchFieldException e) {
+                            // recurse into parents
+                        }
+                    }
+
+                    PropertyDescriptor pd = PropertyUtils.getPropertyDescriptor(r, key);
+                    if (pd==null)   continue;
+
+                    Method wm = pd.getWriteMethod();
+                    if (wm==null)   continue;
+                    if (wm.getAnnotation(DataBoundSetter.class)==null) {
+                        LOGGER.warning("Tried to set value to "+key+" but method "+wm+" is missing @DataBoundSetter");
+                        continue;
+                    }
+
+                    Class<?>[] pt = wm.getParameterTypes();
+
+                    if (pt.length!=1) {
+                        LOGGER.log(WARNING, "Setter method "+wm+" is expected to have 1 parameter");
+                        continue;
+                    }
+
+                    // only invoking public methods for security reasons
+                    wm.invoke(r, bindJSON(wm.getGenericParameterTypes()[0], pt[0], j.get(key)));
+                } catch (IllegalAccessException e) {
+                    LOGGER.log(WARNING, "Cannot access property " + key + " of " + r.getClass(), e);
+                } catch (InvocationTargetException e) {
+                    LOGGER.log(WARNING, "Cannot access property " + key + " of " + r.getClass(), e);
+                } catch (NoSuchMethodException e) {
+                    LOGGER.log(WARNING, "Cannot access property " + key + " of " + r.getClass(), e);
+                }
+            }
+        }
+
+        invokePostConstruct(getWebApp().getMetaClass(r).getPostConstructMethods(), r);
+
+        return r;
+    }
+
+    /**
+     * Invoke PostConstruct method from the base class to subtypes.
+     */
+    private void invokePostConstruct(SingleLinkedList<MethodRef> methods, Object r) {
+        if (methods.isEmpty())  return;
+
+        invokePostConstruct(methods.tail,r);
+        try {
+            methods.head.invoke(r);
+        } catch (InvocationTargetException e) {
+            throw new IllegalArgumentException("Unable to post-construct "+r,e);
+        } catch (IllegalAccessException e) {
+            throw (Error)new IllegalAccessError().initCause(e);
+        }
+
     }
 
     /**
@@ -786,14 +881,25 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
                 isSubmission=true;
                 parseMultipartFormData();
                 FileItem item = parsedFormData.get("json");
-                if(item!=null)
-                    p = item.getString();
+                if(item!=null) {
+                    if (item.getContentType() == null && getCharacterEncoding() != null) {
+                        // JENKINS-11543: If client doesn't set charset per part, use request encoding
+                        try {
+                            p = item.getString(getCharacterEncoding());
+                        } catch (java.io.UnsupportedEncodingException uee) {
+                            LOGGER.log(WARNING, "Request has unsupported charset, using default for 'json' parameter", uee);
+                            p = item.getString();
+                        }
+                    } else {
+                        p = item.getString();
+                    }
+                }
             } else {
                 p = getParameter("json");
                 isSubmission = !getParameterMap().isEmpty();
             }
             
-            if(p==null) {
+            if(p==null || p.length() == 0) {
                 // no data submitted
                 try {
                     StaplerResponse rsp = Stapler.getCurrentResponse();
@@ -801,13 +907,16 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
                         rsp.sendError(SC_BAD_REQUEST,"This page expects a form submission");
                     else
                         rsp.sendError(SC_BAD_REQUEST,"Nothing is submitted");
-                    rsp.getWriter().close();
-                    throw new Error("This page expects a form submission");
+                    throw new ServletException("This page expects a form submission but had only " + getParameterMap());
                 } catch (IOException e) {
-                    throw new Error(e);
+                    throw new ServletException(e);
                 }
             }
-            structuredForm = JSONObject.fromObject(p);
+            try {
+                structuredForm = JSONObject.fromObject(p);
+            } catch (JSONException e) {
+                throw new ServletException("Failed to parse JSON:" + p, e);
+            }
         }
         return structuredForm;
     }
@@ -819,4 +928,6 @@ public class RequestImpl extends HttpServletRequestWrapper implements StaplerReq
         if(item==null || item.isFormField())    return null;
         return item;
     }
+
+    private static final Logger LOGGER = Logger.getLogger(RequestImpl.class.getName());
 }

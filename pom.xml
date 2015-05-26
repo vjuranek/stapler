@@ -1,10 +1,15 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
   <modelVersion>4.0.0</modelVersion>
   
+  <parent>
+    <groupId>org.kohsuke</groupId>
+    <artifactId>pom</artifactId>
+    <version>14</version>
+  </parent>
   <groupId>org.kohsuke.stapler</groupId>
   <artifactId>stapler-parent</artifactId>
   <packaging>pom</packaging>
-  <version>1.196-SNAPSHOT</version>
+  <version>1.238-SNAPSHOT</version>
 
   <name>Stapler</name>
   <description>Stapler HTTP request handling engine</description>
@@ -18,50 +23,32 @@
     <module>jrebel</module>
   </modules>
 
-  <organization>
-    <url>http://www.java.net/</url>
-  </organization>
+  <url>http://stapler.kohsuke.org/</url>
 
   <licenses>
     <license>
       <name>2-clause BSD license</name>
       <distribution>repo</distribution>
-      <url>http://www.opensource.org/licenses/bsd-license.php</url>
+      <url>http://opensource.org/licenses/bsd-license.php</url>
     </license>
   </licenses>
-  
-  <mailingLists>
-    <mailingList>
-      <name>Users List</name>
-      <subscribe>users-subscribe@stapler.dev.java.net</subscribe>
-      <unsubscribe>users-unsubscribe@stapler.dev.java.net</unsubscribe>
-      <archive>https://stapler.dev.java.net/servlets/SummarizeList?listName=users</archive>
-    </mailingList>
-    <mailingList>
-      <name>Issues List</name>
-      <subscribe>issues-subscribe@stapler.dev.java.net</subscribe>
-      <unsubscribe>issues-unsubscribe@stapler.dev.java.net</unsubscribe>
-      <archive>https://stapler.dev.java.net/servlets/SummarizeList?listName=issues</archive>
-    </mailingList>
-    <mailingList>
-      <name>CVS List</name>
-      <subscribe>cvs-subscribe@stapler.dev.java.net</subscribe>
-      <unsubscribe>cvs-unsubscribe@stapler.dev.java.net</unsubscribe>
-      <archive>https://stapler.dev.java.net/servlets/SummarizeList?listName=cvs</archive>
-    </mailingList>
-  </mailingLists>
   
   <scm>
     <connection>scm:git:git://github.com/stapler/stapler.git</connection>
     <developerConnection>scm:git:ssh://git@github.com/stapler/stapler.git</developerConnection>
     <url>https://github.com/stapler/stapler</url>
+    <tag>HEAD</tag>
   </scm>
 
+  <prerequisites>
+    <maven>3.0.4</maven>
+  </prerequisites>
+
   <distributionManagement>
-    <repository>
+    <snapshotRepository>
       <id>maven.jenkins-ci.org</id>
-      <url>http://maven.jenkins-ci.org:8081/content/repositories/releases/</url>
-    </repository>
+      <url>http://maven.jenkins-ci.org:8081/content/repositories/snapshots/</url>
+    </snapshotRepository>
     <site>
       <id>github-pages</id>
       <url>gitsite:git@github.com/stapler/stapler.git</url>
@@ -90,41 +77,84 @@
     </pluginRepository>
   </pluginRepositories>
 
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <java.level>6</java.level>
+  </properties>
+
   <build>
     <plugins>
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.1</version>
         <configuration>
-          <source>1.5</source>
-          <target>1.5</target>
+          <source>1.${java.level}</source>
+          <target>1.${java.level}</target>
         </configuration>
       </plugin>
       <plugin>
-        <groupId>org.jvnet.fix1600</groupId>
-        <artifactId>fix1600</artifactId>
-        <version>1.5</version>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>animal-sniffer-maven-plugin</artifactId>
+        <version>1.9</version>
         <executions>
           <execution>
             <goals>
-              <goal>fix</goal>
+              <goal>check</goal>
             </goals>
           </execution>
         </executions>
+        <configuration>
+          <signature>
+            <groupId>org.codehaus.mojo.signature</groupId>
+            <artifactId>java1${java.level}</artifactId>
+            <version>1.0</version>
+          </signature>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>1.3.1</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <requireJavaVersion>
+                  <version>[1.${java.level},)</version>
+                </requireJavaVersion>
+                <enforceBytecodeVersion>
+                  <maxJdkVersion>1.${java.level}</maxJdkVersion>
+                  <ignoreClasses>
+                    <!-- Bundled in jruby-complete: -->
+                    <string>com.headius.invokebinder.*</string>
+                  </ignoreClasses>
+                </enforceBytecodeVersion>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+        <dependencies>
+          <dependency>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>extra-enforcer-rules</artifactId>
+            <version>1.0-beta-2</version>
+          </dependency>
+        </dependencies>
       </plugin>
       <plugin>
         <artifactId>maven-release-plugin</artifactId>
-        <version>2.1</version>
         <configuration>
           <!-- work around for a bug in javadoc plugin that causes the release to fail. see MRELEASE-271 -->
           <preparationGoals>clean install</preparationGoals>
-          <arguments>-P release</arguments>
           <remoteTagging>true</remoteTagging>
         </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-site-plugin</artifactId>
-        <version>3.0-beta-3</version>
         <dependencies>
           <dependency>
             <groupId>org.kohsuke</groupId>
@@ -138,44 +168,38 @@
         <artifactId>maven-jellydoc-plugin</artifactId>
         <version>1.2</version>
       </plugin>
-      <plugin>
-        <artifactId>maven-enforcer-plugin</artifactId>
-        <version>1.0</version>
-        <executions>
-          <execution>
-            <goals>
-              <goal>enforce</goal>
-            </goals>
-            <configuration>
-              <rules>
-                <requireJavaVersion><!-- require JDK6 for META-INF/services -->
-                  <version>[1.6.0,]</version>
-                </requireJavaVersion>
-              </rules>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
     </plugins>
-    
-    <extensions>
-      <extension>
-        <groupId>org.apache.maven.wagon</groupId>
-        <artifactId>wagon-webdav</artifactId>
-        <version>1.0-beta-2</version>
-      </extension>
-      <extension>
-        <groupId>org.kathrynhuxtable.maven.wagon</groupId>
-        <artifactId>wagon-gitsite</artifactId>
-        <version>0.3.1</version>
-      </extension>
-    </extensions>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <artifactId>maven-deploy-plugin</artifactId>
+          <version>2.8.2</version>
+        </plugin>
+        <plugin>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>2.5</version>
+        </plugin>
+        <plugin>
+          <artifactId>maven-source-plugin</artifactId>
+          <version>2.4</version>
+        </plugin>
+        <plugin>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <version>2.10.1</version>
+        </plugin>
+        <plugin>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>2.18.1</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
   </build>
 
   <reporting>
     <plugins>
       <plugin>
         <artifactId>maven-project-info-reports-plugin</artifactId>
+        <version>2.7</version>
         <reportSets>
           <reportSet>
             <reports>
@@ -186,8 +210,16 @@
       </plugin>
       <plugin>
         <artifactId>maven-javadoc-plugin</artifactId>
+        <version>2.9.1</version>
         <configuration>
           <aggregate>true</aggregate>
+          <doclet>org.kohsuke.doklet.Doklet</doclet>
+          <linksource>true</linksource>
+          <docletArtifact>
+            <groupId>org.kohsuke</groupId>
+            <artifactId>doklet</artifactId>
+            <version>1.0</version>
+          </docletArtifact>
         </configuration>
       </plugin>
     </plugins>
@@ -199,7 +231,7 @@
     <dependency>
       <groupId>org.kohsuke.metainf-services</groupId>
       <artifactId>metainf-services</artifactId>
-      <version>1.4</version>
+      <version>1.5</version>
     </dependency>
 
     <!-- test dependencies -->
@@ -231,10 +263,9 @@
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
-      <version>4.10</version>
+      <version>4.11</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
   </dependencyManagement>
 </project>
-

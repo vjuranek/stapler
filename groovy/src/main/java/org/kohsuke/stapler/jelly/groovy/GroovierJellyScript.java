@@ -44,6 +44,9 @@ public class GroovierJellyScript implements Script {
      */
     private final Class clazz;
 
+    /**
+     * Where was this script loaded from? Used for diagnostics.
+     */
     private final URL scriptURL;
 
     public GroovierJellyScript(Class clazz, URL scriptURL) {
@@ -60,7 +63,12 @@ public class GroovierJellyScript implements Script {
     }
 
     public void run(JellyBuilder builder) {
-        StaplerClosureScript gcs = (StaplerClosureScript) InvokerHelper.createScript(clazz, new Binding());
+        StaplerClosureScript gcs;
+        try {
+            gcs = (StaplerClosureScript) InvokerHelper.createScript(clazz, new Binding());
+        } catch (LinkageError e) {
+            throw (LinkageError)new LinkageError("Failed to run "+clazz+" from "+scriptURL).initCause(e);
+        }
         gcs.setDelegate(builder);
         gcs.scriptURL = scriptURL;
         gcs.run();

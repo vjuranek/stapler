@@ -24,17 +24,15 @@
 package org.kohsuke.stapler.jelly.groovy;
 
 import org.apache.commons.jelly.Script;
-import org.kohsuke.stapler.AbstractTearOff;
+import org.kohsuke.MetaInfServices;
 import org.kohsuke.stapler.Dispatcher;
 import org.kohsuke.stapler.Facet;
 import org.kohsuke.stapler.MetaClass;
 import org.kohsuke.stapler.RequestImpl;
 import org.kohsuke.stapler.ResponseImpl;
-import org.kohsuke.stapler.TearOffSupport;
 import org.kohsuke.stapler.WebApp;
 import org.kohsuke.stapler.jelly.JellyCompatibleFacet;
 import org.kohsuke.stapler.jelly.JellyFacet;
-import org.kohsuke.MetaInfServices;
 import org.kohsuke.stapler.lang.Klass;
 
 import javax.servlet.RequestDispatcher;
@@ -55,6 +53,7 @@ public class GroovyFacet extends Facet implements JellyCompatibleFacet {
     public void buildViewDispatchers(final MetaClass owner, List<Dispatcher> dispatchers) {
         dispatchers.add(new Dispatcher() {
             final GroovyClassTearOff tearOff = owner.loadTearOff(GroovyClassTearOff.class);
+            final GroovyServerPageTearOff gsp = owner.loadTearOff(GroovyServerPageTearOff.class);
 
             public boolean dispatch(RequestImpl req, ResponseImpl rsp, Object node) throws IOException, ServletException {
                 // check Groovy view
@@ -67,8 +66,11 @@ public class GroovyFacet extends Facet implements JellyCompatibleFacet {
                 if (req.getRequestURI().endsWith("/"))      return false;
 
                 try {
-                    Script script = tearOff.findScript(next+".groovy");
-                    if(script==null)        return false;   // no Groovy script found
+                    Script script = tearOff.findScript(next);
+                    if(script==null)
+                        script = gsp.findScript(next);
+                    if (script==null)
+                        return false;   // no Groovy script found
 
                     req.tokens.next();
 
@@ -87,7 +89,7 @@ public class GroovyFacet extends Facet implements JellyCompatibleFacet {
                 }
             }
             public String toString() {
-                return "TOKEN.groovy for url=/TOKEN/...";
+                return "TOKEN.groovy for url=/TOKEN";
             }
         });
     }
@@ -101,12 +103,25 @@ public class GroovyFacet extends Facet implements JellyCompatibleFacet {
     }
 
     public RequestDispatcher createRequestDispatcher(RequestImpl request, Klass type, Object it, String viewName) throws IOException {
-        TearOffSupport mc = request.stapler.getWebApp().getMetaClass(type);
-        return mc.loadTearOff(GroovyClassTearOff.class).createDispatcher(it,viewName);
+        MetaClass mc = request.stapler.getWebApp().getMetaClass(type);
+        return createDispatcher(it, viewName, mc);
+    }
+
+    private RequestDispatcher createDispatcher(Object it, String viewName, MetaClass mc) throws IOException {
+        RequestDispatcher d = mc.loadTearOff(GroovyClassTearOff.class).createDispatcher(it, viewName);
+        if (d==null)
+            d = mc.loadTearOff(GroovyServerPageTearOff.class).createDispatcher(it, viewName);
+        return d;
     }
 
     public boolean handleIndexRequest(RequestImpl req, ResponseImpl rsp, Object node, MetaClass nodeMetaClass) throws IOException, ServletException {
-        return nodeMetaClass.loadTearOff(GroovyClassTearOff.class).serveIndexGroovy(req, rsp, node);
+        RequestDispatcher d = createDispatcher(node,"index", nodeMetaClass);
+
+        if (d!=null) {
+            d.forward(req, rsp);
+            return true;
+        }
+        return false;
     }
 
     private static final Set<Class<GroovyClassTearOff>> TEAROFF_TYPES = Collections.singleton(GroovyClassTearOff.class);

@@ -33,10 +33,13 @@ import java.net.URL;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Exposes one {@link Exported exposed property} of {@link ExportedBean} to
@@ -161,24 +164,28 @@ public abstract class Property implements Comparable<Property> {
             return;
         }
         if(c.getComponentType()!=null) { // array
+            Range r = pruner.getRange();
             writer.startArray();
             if (value instanceof Object[]) {
                 // typical case
-                for (Object item : (Object[]) value)
+                for (Object item : r.apply((Object[]) value)) {
                     writeValue(item,pruner,writer,true);
+                }
             } else {
                 // more generic case
-                int len = Array.getLength(value);
-                for (int i=0; i<len; i++)
+                int len = Math.min(r.max,Array.getLength(value));
+                for (int i=r.min; i<len; i++) {
                     writeValue(Array.get(value,i),pruner,writer,true);
+                }
             }
             writer.endArray();
             return;
         }
         if(value instanceof Collection) {
             writer.startArray();
-            for (Object item : (Collection) value)
+            for (Object item : pruner.getRange().apply((Collection) value)) {
                 writeValue(item,pruner,writer,true);
+            }
             writer.endArray();
             return;
         }
@@ -221,14 +228,17 @@ public abstract class Property implements Comparable<Property> {
         writer.startObject();
         Model model = null;
         try {
-            model = owner.get(c);
+            model = owner.get(c, parent.type, name);
         } catch (NotExportableException e) {
-            if(!skipIfFail)
+            if (skipIfFail) {
+                Logger.getLogger(Property.class.getName()).log(Level.FINE, e.getMessage());
+            } else {
                 throw e;
+            }
             // otherwise ignore this error by writing empty object
         }
         if(model!=null)
-            model.writeNestedObjectTo(value,pruner,writer);
+            model.writeNestedObjectTo(value, pruner, writer, Collections.<String>emptySet());
         writer.endObject();
     }
 

@@ -23,7 +23,9 @@
 
 package org.kohsuke.stapler;
 
+import net.sf.json.JsonConfig;
 import org.kohsuke.stapler.compression.CompressionFilter;
+import org.kohsuke.stapler.compression.FilterServletOutputStream;
 import org.kohsuke.stapler.export.ExportConfig;
 import org.kohsuke.stapler.export.NamedPathPruner;
 import org.kohsuke.stapler.export.Flavor;
@@ -31,6 +33,7 @@ import org.kohsuke.stapler.export.Model;
 import org.kohsuke.stapler.export.ModelBuilder;
 import org.apache.commons.io.IOUtils;
 
+import javax.annotation.Nonnull;
 import javax.servlet.ServletException;
 import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServletResponse;
@@ -45,7 +48,7 @@ import java.io.OutputStream;
 import java.io.Writer;
 import java.net.URL;
 import java.net.HttpURLConnection;
-import java.util.zip.GZIPOutputStream;
+import com.jcraft.jzlib.GZIPOutputStream;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +70,13 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
     private OutputMode mode=null;
     private Throwable origin;
 
+    private JsonConfig jsonConfig;
+
+    /**
+     * {@link ServletOutputStream} or {@link PrintWriter}, set when {@link #mode} is set.
+     */
+    private Object output=null;
+
     public ResponseImpl(Stapler stapler, HttpServletResponse response) {
         super(response);
         this.stapler = stapler;
@@ -78,10 +88,9 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
         if(mode==OutputMode.CHAR)
             throw new IllegalStateException("getWriter has already been called. Its call site is in the nested exception",origin);
         if(mode==null) {
-            mode = OutputMode.BYTE;
-            origin = new Throwable();
+            recordOutput(super.getOutputStream());
         }
-        return super.getOutputStream();
+        return (ServletOutputStream)output;
     }
 
     @Override
@@ -89,10 +98,23 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
         if(mode==OutputMode.BYTE)
             throw new IllegalStateException("getOutputStream has already been called. Its call site is in the nested exception",origin);
         if(mode==null) {
-            mode = OutputMode.CHAR;
-            origin = new Throwable();
+            recordOutput(super.getWriter());
         }
-        return super.getWriter();
+        return (PrintWriter)output;
+    }
+
+    private <T extends ServletOutputStream> T recordOutput(T obj) {
+        this.output = obj;
+        this.mode = OutputMode.BYTE;
+        this.origin = new Throwable();
+        return obj;
+    }
+
+    private <T extends PrintWriter> T recordOutput(T obj) {
+        this.output = obj;
+        this.mode = OutputMode.CHAR;
+        this.origin = new Throwable();
+        return obj;
     }
 
     public void forward(Object it, String url, StaplerRequest request) throws ServletException, IOException {
@@ -106,7 +128,7 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
     }
 
     @Override
-    public void sendRedirect(String url) throws IOException {
+    public void sendRedirect(@Nonnull String url) throws IOException {
         // WebSphere doesn't apparently handle relative URLs, so
         // to be safe, always resolve relative URLs to absolute URLs by ourselves.
         // see http://www.nabble.com/Hudson%3A-1.262%3A-Broken-link-using-update-manager-to21067157.html
@@ -124,11 +146,52 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
         super.sendRedirect(base);
     }
 
-    public void sendRedirect2(String url) throws IOException {
+    public void sendRedirect2(@Nonnull String url) throws IOException {
         // Tomcat doesn't encode URL (servlet spec isn't very clear on it)
         // so do the encoding by ourselves
         sendRedirect(encode(url));
     }
+
+    public void sendRedirect(int statusCode, @Nonnull String url) throws IOException {
+        if (statusCode==SC_MOVED_TEMPORARILY) {
+            sendRedirect(url);  // to be safe, let the servlet container handles this default case
+            return;
+        }
+
+        if(url.startsWith("http://") || url.startsWith("https://")) {
+            // absolute URLs
+            url = encode(url);
+        } else {
+            StaplerRequest req = Stapler.getCurrentRequest();
+
+            if (!url.startsWith("/")) {
+                // WebSphere doesn't apparently handle relative URLs, so
+                // to be safe, always resolve relative URLs to absolute URLs by ourselves.
+                // see http://www.nabble.com/Hudson%3A-1.262%3A-Broken-link-using-update-manager-to21067157.html
+
+                // example: /foo/bar/zot + ../abc -> /foo/bar/../abc
+                String base = req.getRequestURI();
+                base = base.substring(0,base.lastIndexOf('/')+1);
+                if(!url.equals("."))
+                    url = base+encode(url);
+                else
+                    url = base;
+
+                assert url.startsWith("/");
+            }
+
+            StringBuilder buf = new StringBuilder(req.getScheme()).append("://").append(req.getServerName());
+            if ((req.getScheme().equals("http") && req.getServerPort()!=80)
+            || (req.getScheme().equals("https") && req.getServerPort()!=443))
+                buf.append(':').append(req.getServerPort());
+            url = buf.append(url).toString();
+        }
+
+        setStatus(statusCode);
+        setHeader("Location",url);
+        getOutputStream().close();
+    }
+
 
     public void serveFile(StaplerRequest req, URL resource, long expiration) throws ServletException, IOException {
         if(!stapler.serveStaticResource(req,this,resource,expiration))
@@ -171,7 +234,7 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
         setContentType(flavor.contentType);
         Writer w = getCompressedWriter(req);
 
-        if(flavor== Flavor.JSON) {
+        if (flavor==Flavor.JSON || flavor==Flavor.JSONP) { // for compatibility reasons, accept JSON for JSONP as well.
             pad = req.getParameter("jsonp");
             if(pad!=null) w.write(pad+'(');
         }
@@ -207,26 +270,41 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
         w.close();
     }
 
-    public OutputStream getCompressedOutputStream(HttpServletRequest req) throws IOException {
+    private boolean acceptsGzip(HttpServletRequest req) {
         String acceptEncoding = req.getHeader("Accept-Encoding");
-        if(acceptEncoding==null || acceptEncoding.indexOf("gzip")==-1)
-            return getOutputStream();   // compression not available
+        return acceptEncoding==null || !acceptEncoding.contains("gzip");
+    }
 
-        addHeader("Content-Encoding","gzip");
-        if (CompressionFilter.has(req))
+    public OutputStream getCompressedOutputStream(HttpServletRequest req) throws IOException {
+        if (mode!=null) // we already made the call and created OutputStream/Writer
+            return getOutputStream();
+
+        if(acceptsGzip(req))
+            return getOutputStream();   // compression not applicable here
+
+        if (CompressionFilter.activate(req))
             return getOutputStream(); // CompressionFilter will set up compression. no need to do anything
-        return new GZIPOutputStream(getOutputStream());
+
+        // CompressionFilter not available, so do it on our own.
+        // see CompressionFilter for why this is not desirable
+        setHeader("Content-Encoding","gzip");
+        return recordOutput(new FilterServletOutputStream(new GZIPOutputStream(super.getOutputStream())));
     }
 
     public Writer getCompressedWriter(HttpServletRequest req) throws IOException {
-        String acceptEncoding = req.getHeader("Accept-Encoding");
-        if(acceptEncoding==null || acceptEncoding.indexOf("gzip")==-1)
+        if (mode!=null)
+            return getWriter();
+
+        if(acceptsGzip(req))
             return getWriter();   // compression not available
 
-        addHeader("Content-Encoding","gzip");
-        if (CompressionFilter.has(req))
+        if (CompressionFilter.activate(req))
             return getWriter(); // CompressionFilter will set up compression. no need to do anything
-        return new OutputStreamWriter(new GZIPOutputStream(getOutputStream()),getCharacterEncoding());
+
+        // CompressionFilter not available, so do it on our own.
+        // see CompressionFilter for why this is not desirable
+        setHeader("Content-Encoding","gzip");
+        return recordOutput(new PrintWriter(new OutputStreamWriter(new GZIPOutputStream(super.getOutputStream()),getCharacterEncoding())));
     }
 
     public int reverseProxyTo(URL url, StaplerRequest req) throws IOException {
@@ -263,6 +341,17 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
         return code;
     }
 
+    public void setJsonConfig(JsonConfig config) {
+        jsonConfig = config;
+    }
+
+    public JsonConfig getJsonConfig() {
+        if (jsonConfig == null) {
+            jsonConfig = new JsonConfig();
+        }
+        return jsonConfig;
+    }
+
     private void copyAndClose(InputStream in, OutputStream out) throws IOException {
         IOUtils.copy(in, out);
         IOUtils.closeQuietly(in);
@@ -272,7 +361,7 @@ public class ResponseImpl extends HttpServletResponseWrapper implements StaplerR
     /**
      * Escapes non-ASCII characters.
      */
-    public static String encode(String s) {
+    public static @Nonnull String encode(@Nonnull String s) {
         try {
             boolean escaped = false;
 

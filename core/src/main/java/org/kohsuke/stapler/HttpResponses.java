@@ -29,6 +29,8 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.URL;
 
+import static javax.servlet.http.HttpServletResponse.SC_MOVED_TEMPORARILY;
+
 /**
  * Factory for {@link HttpResponse}.
  *
@@ -72,9 +74,17 @@ public class HttpResponses {
         };
     }
 
+    /**
+     * Sends an error with a stack trace.
+     * @see #errorWithoutStack
+     */
     @SuppressWarnings({"ThrowableInstanceNeverThrown"})
     public static HttpResponseException error(int code, String errorMessage) {
         return error(code,new Exception(errorMessage));
+    }
+
+    public static HttpResponseException error(Throwable cause) {
+        return error(500,cause);
     }
 
     public static HttpResponseException error(final int code, final Throwable cause) {
@@ -91,18 +101,35 @@ public class HttpResponses {
     }
 
     /**
+     * Sends an error without a stack trace.
+     * @since 1.215
+     * @see #error(int, String)
+     */
+    public static HttpResponseException errorWithoutStack(final int code, final String errorMessage) {
+        return new HttpResponseException() {
+            public void generateResponse(StaplerRequest req, StaplerResponse rsp, Object node) throws IOException, ServletException {
+                rsp.sendError(code, errorMessage);
+            }
+        };
+    }
+
+    public static HttpResponseException redirectViaContextPath(String relative) {
+        return redirectViaContextPath(SC_MOVED_TEMPORARILY,relative);
+    }
+
+    /**
      * @param relative
      *      The path relative to the context path. The context path + this value
      *      is sent to the user.
      */
-    public static HttpResponseException redirectViaContextPath(final String relative) {
+    public static HttpResponseException redirectViaContextPath(final int statusCode, final String relative) {
         return new HttpResponseException() {
             public void generateResponse(StaplerRequest req, StaplerResponse rsp, Object node) throws IOException, ServletException {
                 StringBuilder sb = new StringBuilder(req.getContextPath());
                 if (!relative.startsWith("/"))  sb.append('/');
                 sb.append(relative);
 
-                rsp.sendRedirect2(sb.toString());
+                rsp.sendRedirect(statusCode,sb.toString());
             }
         };
     }
@@ -113,6 +140,10 @@ public class HttpResponses {
      */
     public static HttpRedirect redirectTo(String url) {
         return new HttpRedirect(url);
+    }
+
+    public static HttpRedirect redirectTo(int statusCode, String url) {
+        return new HttpRedirect(statusCode,url);
     }
 
     /**
@@ -166,7 +197,7 @@ public class HttpResponses {
     public static HttpResponse staticResource(final URL resource, final long expiration) {
         return new HttpResponse() {
             public void generateResponse(StaplerRequest req, StaplerResponse rsp, Object node) throws IOException, ServletException {
-                Stapler.getCurrent().serveStaticResource(req,rsp,resource,expiration);
+                rsp.serveFile(req,resource,expiration);
             }
         };
     }

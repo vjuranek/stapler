@@ -32,7 +32,6 @@ import org.apache.commons.beanutils.ConvertingWrapDynaBean;
 import org.apache.commons.beanutils.DynaBean;
 import org.apache.commons.beanutils.DynaProperty;
 import org.apache.commons.jelly.DynaTag;
-import org.apache.commons.jelly.Jelly;
 import org.apache.commons.jelly.JellyContext;
 import org.apache.commons.jelly.JellyException;
 import org.apache.commons.jelly.JellyTagException;
@@ -51,7 +50,6 @@ import org.kohsuke.stapler.MetaClassLoader;
 import org.kohsuke.stapler.Stapler;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
-import org.kohsuke.stapler.WebApp;
 import org.kohsuke.stapler.framework.adjunct.AdjunctManager;
 import org.kohsuke.stapler.framework.adjunct.AdjunctsInPage;
 import org.kohsuke.stapler.framework.adjunct.NoSuchAdjunctException;
@@ -78,11 +76,6 @@ import java.util.Map.Entry;
  * @author Kohsuke Kawaguchi
  */
 public final class JellyBuilder extends GroovyObjectSupport {
-    /**
-     * Wrote the &lt;HEAD> tag?
-     */
-    private boolean wroteHEAD;
-
     /**
      * Current {@link XMLOutput}.
      */
@@ -155,7 +148,7 @@ public final class JellyBuilder extends GroovyObjectSupport {
     }
 
     private void _include(Object it, Klass clazz, String view) throws IOException, JellyException {
-        JellyClassTearOff t = request.getWebApp().getMetaClass(clazz).getTearOff(JellyClassTearOff.class);
+        JellyClassTearOff t = request.getWebApp().getMetaClass(clazz).loadTearOff(JellyClassTearOff.class);
         Script s = t.findScript(view);
         if(s==null)
             throw new IllegalArgumentException("No such view: "+view+" for "+clazz);
@@ -298,10 +291,6 @@ public final class JellyBuilder extends GroovyObjectSupport {
         }
         try {
             output.startElement(name.getNamespaceURI(),name.getLocalPart(),name.getQualifiedName(),this.attributes);
-            if(!wroteHEAD && name.getLocalPart().equalsIgnoreCase("HEAD")) {
-                wroteHEAD = true;
-                AdjunctsInPage.get().writeSpooled(output);
-            }
             if(closure!=null) {
                 closure.setDelegate(this);
                 closure.call();
@@ -309,8 +298,6 @@ public final class JellyBuilder extends GroovyObjectSupport {
             if(innerText!=null)
             text(innerText);
             output.endElement(name.getNamespaceURI(),name.getLocalPart(),name.getQualifiedName());
-        } catch (IOException e) {
-            throw new RuntimeException(e);  // what's the proper way to handle exceptions in Groovy?
         } catch (SAXException e) {
             throw new RuntimeException(e);  // what's the proper way to handle exceptions in Groovy?
         }
@@ -581,8 +568,7 @@ public final class JellyBuilder extends GroovyObjectSupport {
     public void adjunct(String name) throws IOException, SAXException {
         try {
             AdjunctsInPage aip = AdjunctsInPage.get();
-            if(wroteHEAD)   aip.generate(output,name);
-            else            aip.spool(name);
+            aip.generate(output,name);
         } catch (NoSuchAdjunctException e) {
             // that's OK.
         }
@@ -609,7 +595,7 @@ public final class JellyBuilder extends GroovyObjectSupport {
             if(res!=null) {
                 // this class itself is not a tag library, but it contains Jelly side files that are tag files.
                 // (some of them might be views, but some of them are tag files, anyway.
-                JellyContext parseContext = MetaClassLoader.get(t.getClassLoader()).getTearOff(JellyClassLoaderTearOff.class).createContext();
+                JellyContext parseContext = MetaClassLoader.get(t.getClassLoader()).loadTearOff(JellyClassLoaderTearOff.class).createContext();
 
                 context.registerTagLibrary(n,
                     new CustomTagLibrary(parseContext, t.getClassLoader(), n, path));
@@ -651,7 +637,7 @@ public final class JellyBuilder extends GroovyObjectSupport {
     }
 
     /**
-     * Generates an &lt;IMG> tag to the resource.
+     * Generates an {@code <IMG>} tag to the resource.
      */
     public void img(Object base, String localName) throws SAXException {
         output.write(

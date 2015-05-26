@@ -27,16 +27,20 @@ import net.sf.json.JSONArray;
 import org.apache.commons.io.IOUtils;
 import org.kohsuke.stapler.bind.JavaScriptMethod;
 import org.kohsuke.stapler.lang.Klass;
+import org.kohsuke.stapler.lang.MethodRef;
 
+import javax.annotation.PostConstruct;
 import javax.servlet.ServletException;
-import static javax.servlet.http.HttpServletResponse.SC_NOT_FOUND;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+
+import static javax.servlet.http.HttpServletResponse.*;
 
 /**
  * Created one instance each for a {@link Klass},
@@ -75,6 +79,12 @@ public class MetaClass extends TearOffSupport {
      */
     public final WebApp webApp;
 
+    /**
+     * If there's a method annotated with @PostConstruct, that {@link MethodRef} object, linked
+     * to the list of the base class.
+     */
+    private volatile SingleLinkedList<MethodRef> postConstructMethods;
+
     /*package*/ MetaClass(WebApp webApp, Klass<?> klass) {
         this.clazz = klass.toJavaClass();
         this.klass = klass;
@@ -108,8 +118,7 @@ public class MetaClass extends TearOffSupport {
                     public boolean doDispatch(RequestImpl req, ResponseImpl rsp, Object node) throws IllegalAccessException, InvocationTargetException, ServletException, IOException {
                         if(traceable())
                             trace(req,rsp,"-> <%s>.%s(...)",node,f.getName());
-                        f.bindAndInvokeAndServeResponse(node, req, rsp);
-                        return true;
+                        return f.bindAndInvokeAndServeResponse(node, req, rsp);
                     }
                     public String toString() {
                         return f.getQualifiedName()+"(...) for url=/"+name+"/...";
@@ -153,8 +162,7 @@ public class MetaClass extends TearOffSupport {
                     if(traceable())
                         trace(req,rsp,"-> <%s>.doIndex(...)",node);
 
-                    f.bindAndInvokeAndServeResponse(node,req,rsp);
-                    return true;
+                    return f.bindAndInvokeAndServeResponse(node,req,rsp);
                 }
                 public String toString() {
                     return f.getQualifiedName()+"(StaplerRequest,StaplerResponse) for url=/";
@@ -266,6 +274,26 @@ public class MetaClass extends TearOffSupport {
             });
         }
 
+        // check public selector methods <obj>.get<Token>(long)
+        // TF: I'm sure these for loop blocks could be dried out in some way.
+        for( final Function f : getMethods.signature(long.class) ) {
+            if(f.getName().length()<=3)
+                continue;
+            String name = camelize(f.getName().substring(3)); // 'getFoo' -> 'foo'
+            dispatchers.add(new NameBasedDispatcher(name,1) {
+                public boolean doDispatch(RequestImpl req, ResponseImpl rsp, Object node) throws IOException, ServletException, IllegalAccessException, InvocationTargetException {
+                    long idx = req.tokens.nextAsLong();
+                    if(traceable())
+                        traceEval(req,rsp,node,f.getName()+"("+idx+")");
+                    req.getStapler().invoke(req,rsp, f.invoke(req, rsp, node,idx));
+                    return true;
+                }
+                public String toString() {
+                    return String.format("%1$s(long) for url=/%2$s/N/...",f.getQualifiedName(),name);
+                }
+            });
+        }
+
         if(node.clazz.isArray()) {
             dispatchers.add(new Dispatcher() {
                 public boolean dispatch(RequestImpl req, ResponseImpl rsp, Object node) throws IOException, ServletException {
@@ -353,22 +381,6 @@ public class MetaClass extends TearOffSupport {
         for (Facet f : webApp.facets)
             f.buildFallbackDispatchers(this, dispatchers);
 
-        // check action <obj>.doDynamic(...)
-        for( final Function f : node.methods.name("doDynamic") ) {
-
-            dispatchers.add(new Dispatcher() {
-                public boolean dispatch(RequestImpl req, ResponseImpl rsp, Object node) throws IllegalAccessException, InvocationTargetException, ServletException, IOException {
-                    if(traceable())
-                        trace(req,rsp,"-> <%s>.doDynamic(...)",node);
-                    f.bindAndInvokeAndServeResponse(node,req,rsp);
-                    return true;
-                }
-                public String toString() {
-                    return String.format("%s(StaplerRequest,StaplerResponse) for any URL",f.getQualifiedName());
-                }
-            });
-        }
-
         // check public selector methods <obj>.getDynamic(<token>,...)
         for( final Function f : getMethods.signatureStartsWith(String.class).name("getDynamic")) {
             dispatchers.add(new Dispatcher() {
@@ -396,6 +408,42 @@ public class MetaClass extends TearOffSupport {
                 }
             });
         }
+
+        // check action <obj>.doDynamic(...)
+        for( final Function f : node.methods.name("doDynamic") ) {
+
+            dispatchers.add(new Dispatcher() {
+                public boolean dispatch(RequestImpl req, ResponseImpl rsp, Object node) throws IllegalAccessException, InvocationTargetException, ServletException, IOException {
+                    if(traceable())
+                        trace(req,rsp,"-> <%s>.doDynamic(...)",node);
+                    return f.bindAndInvokeAndServeResponse(node,req,rsp);
+                }
+                public String toString() {
+                    return String.format("%s(StaplerRequest,StaplerResponse) for any URL",f.getQualifiedName());
+                }
+            });
+        }
+    }
+
+    /**
+     * Returns all the methods in the ancestory chain annotated with {@link PostConstruct}
+     * from those defined in the derived type toward those defined in the base type.
+     *
+     * Normally invocation requires visiting the list in the reverse order.
+     * @since 1.220
+     */
+    public SingleLinkedList<MethodRef> getPostConstructMethods() {
+        if (postConstructMethods ==null) {
+            SingleLinkedList<MethodRef> l = baseClass==null ? SingleLinkedList.<MethodRef>empty() : baseClass.getPostConstructMethods();
+
+            for (MethodRef mr : klass.getDeclaredMethods()) {
+                if (mr.hasAnnotation(PostConstruct.class)) {
+                    l = l.grow(mr);
+                }
+            }
+            postConstructMethods = l;
+        }
+        return postConstructMethods;
     }
 
     private String getProtectedRole(Field f) {
@@ -431,13 +479,15 @@ public class MetaClass extends TearOffSupport {
             JSONArray jsargs = JSONArray.fromObject(IOUtils.toString(req.getReader()));
             Object[] args = new Object[jsargs.size()];
             Class[] types = f.getParameterTypes();
-            Type[] genericTypes = f.getParameterTypes();
+            Type[] genericTypes = f.getGenericParameterTypes();
+            if (args.length != types.length) {
+                throw new IllegalArgumentException("argument count mismatch between " + jsargs + " and " + Arrays.toString(genericTypes));
+            }
 
             for (int i=0; i<args.length; i++)
                 args[i] = req.bindJSON(genericTypes[i],types[i],jsargs.get(i));
 
-            f.bindAndInvokeAndServeResponse(node,req,rsp,args);
-            return true;
+            return f.bindAndInvokeAndServeResponse(node,req,rsp,args);
         }
 
         public String toString() {
@@ -458,4 +508,6 @@ public class MetaClass extends TearOffSupport {
             // ignore.
         }
     }
+
+    private static final Object NONE = "none";
 }

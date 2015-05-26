@@ -23,8 +23,10 @@
 
 package org.kohsuke.stapler;
 
+import net.sf.json.JsonConfig;
 import org.kohsuke.stapler.export.Flavor;
 
+import javax.annotation.Nonnull;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpServletRequest;
@@ -70,7 +72,12 @@ public interface StaplerResponse extends HttpServletResponse {
      * Works like {@link #sendRedirect(String)} except that this method
      * escapes the URL.
      */
-    void sendRedirect2(String url) throws IOException;
+    void sendRedirect2(@Nonnull String url) throws IOException;
+
+    /**
+     * Works like {@link #sendRedirect2(String)} but allows the caller to specify the HTTP status code.
+     */
+    void sendRedirect(int statusCore, @Nonnull String url) throws IOException;
 
     /**
      * Serves a static resource.
@@ -135,7 +142,7 @@ public interface StaplerResponse extends HttpServletResponse {
     void serveFile(StaplerRequest req, InputStream data, long lastModified, long expiration, long contentLength, String fileName) throws ServletException, IOException;
 
     /**
-     * @Deprecated use form with long contentLength
+     * @deprecated use form with long contentLength
      */
     void serveFile(StaplerRequest req, InputStream data, long lastModified, long expiration, int contentLength, String fileName) throws ServletException, IOException;
 
@@ -150,7 +157,7 @@ public interface StaplerResponse extends HttpServletResponse {
     void serveFile(StaplerRequest req, InputStream data, long lastModified, long contentLength, String fileName) throws ServletException, IOException;
 
     /**
-     * @Deprecated use form with long contentLength
+     * @deprecated use form with long contentLength
      */
     void serveFile(StaplerRequest req, InputStream data, long lastModified, int contentLength, String fileName) throws ServletException, IOException;
 
@@ -194,4 +201,20 @@ public interface StaplerResponse extends HttpServletResponse {
      *      The status code of the response.
      */
     int reverseProxyTo(URL url, StaplerRequest req) throws IOException;
+
+    /**
+     * The JsonConfig to be used when serializing java beans from js bound methods to JSON.
+     * Setting this to null will make the default config to be used.
+     *
+     * @param config the config
+     */
+    void setJsonConfig(JsonConfig config);
+
+    /**
+     * The JsonConfig to be used when serializing java beans to JSON previously set by {@link #setJsonConfig(JsonConfig)}.
+     * Will return the default config if nothing has previously been set.
+     *
+     * @return the config
+     */
+    JsonConfig getJsonConfig();
 }

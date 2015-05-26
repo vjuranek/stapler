@@ -4,7 +4,10 @@ import junit.framework.TestCase;
 import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 
+import javax.annotation.PostConstruct;
+import java.lang.reflect.Type;
 import java.net.Proxy;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
@@ -135,12 +138,22 @@ public class DataBindingTest extends TestCase {
     }
 
     private <T> T bind(String json, Class<T> type) {
-        RequestImpl req = new RequestImpl(new Stapler(), new MockRequest(), Collections.<AncestorImpl>emptyList(), null);
+        return bind(json,type,BindInterceptor.NOOP);
+    }
+    private <T> T bind(String json, Class<T> type, BindInterceptor bi) {
+        RequestImpl req = createFakeRequest();
+        req.setBindInterceptor(bi);
         return req.bindJSON(type, JSONObject.fromObject(json));
     }
 
+    private RequestImpl createFakeRequest() {
+        Stapler s = new Stapler();
+        s.setWebApp(new WebApp(null));
+        return new RequestImpl(s, new MockRequest(), Collections.<AncestorImpl>emptyList(), null);
+    }
+
     private <T> T bind(JSONObject json, T bean) {
-        RequestImpl req = new RequestImpl(new Stapler(), new MockRequest(), Collections.<AncestorImpl>emptyList(), null);
+        RequestImpl req = createFakeRequest();
         req.bindJSON(bean,json);
         return bean;
     }
@@ -167,4 +180,173 @@ public class DataBindingTest extends TestCase {
         RawBinding r3 = bind("{x:{a:true,b:1},y:true}", RawBinding.class);
         assertTrue((Boolean)r3.y.get(0));
     }
+
+    public static class SetterBinding {
+        private int w,x,y,z;
+        private Object o;
+        private List<SetterBinding> children;
+
+        @DataBoundConstructor
+        public SetterBinding(int x, int y) {
+            this.x = x;
+            this.y = y;
+        }
+
+        /**
+         * Setter not annotated with {@link DataBoundSetter}, so it should be ignored
+         */
+        public void setW(int w) {
+            this.w = w;
+        }
+
+        @DataBoundSetter
+        public void setZ(int z) {
+            this.z = z;
+        }
+
+        /**
+         * We expect y to be set through constructor
+         */
+        @DataBoundSetter
+        public void setY(int y) {
+            throw new IllegalArgumentException();
+        }
+
+        @DataBoundSetter
+        public void setAnotherObject(Object o) {
+            this.o = o;
+        }
+
+        @DataBoundSetter
+        public void setChildren(List<SetterBinding> children) {
+            this.children = children;
+        }
+    }
+
+    public static class Point {
+        int x,y;
+
+        @DataBoundConstructor
+        public Point(int x, int y) {
+            this.x = x;
+            this.y = y;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+
+            Point rhs = (Point) o;
+            return x == rhs.x && y == rhs.y;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = x;
+            result = 31 * result + y;
+            return result;
+        }
+    }
+
+    public void testSetterInvocation() {
+        SetterBinding r = bind("{x:1,y:2,z:3,w:1, children:[{x:5,y:5,z:5},{x:6,y:6,z:6}], anotherObject:{$class:'org.kohsuke.stapler.DataBindingTest$Point', x:1,y:1} }",SetterBinding.class);
+        assertEquals(1,r.x);
+        assertEquals(2,r.y);
+        assertEquals(3,r.z);
+        assertEquals(0,r.w);
+
+        assertEquals(2,r.children.size());
+        SetterBinding c1 = r.children.get(0);
+        assertEquals(5, c1.x);
+        assertEquals(5, c1.y);
+        assertEquals(5, c1.z);
+
+        SetterBinding c2 = r.children.get(1);
+        assertEquals(6, c2.x);
+        assertEquals(6, c2.y);
+        assertEquals(6, c2.z);
+
+        Point o = (Point)r.o;
+        assertEquals(1,o.x);
+        assertEquals(1,o.y);
+    }
+
+    public static abstract class Point3 {
+        @DataBoundSetter
+        private int x,y,z;
+
+        int post=1;
+
+        public void assertValues() {
+            assertEquals(1,x);
+            assertEquals(2,y);
+            assertEquals(3,z);
+        }
+
+        @PostConstruct
+        private void post1() {
+            post += 4;
+        }
+    }
+
+    public static class Point3Derived extends Point3 {
+        @DataBoundConstructor
+        public Point3Derived() {
+        }
+
+        @PostConstruct
+        private void post1() {
+            post *= 2;
+        }
+    }
+
+    public void testFieldInjection() {
+        Point3Derived r = bind("{x:1,y:2,z:3} }",Point3Derived.class);
+        r.assertValues();
+        assertEquals(10,r.post);
+    }
+
+    public void testInterceptor1() {
+        String r = bind("{x:1}", String.class, new BindInterceptor() {
+            @Override
+            public Object onConvert(Type targetType, Class targetTypeErasure, Object jsonSource) {
+                assertEquals(targetType, String.class);
+                assertEquals(targetTypeErasure, String.class);
+                return String.valueOf(((JSONObject) jsonSource).getInt("x"));
+            }
+        });
+        assertEquals("1",r);
+    }
+
+    public void testInterceptor2() {
+        RequestImpl req = createFakeRequest();
+        req.setBindInterceptor(new BindInterceptor() {
+            @Override
+            public Object onConvert(Type targetType, Class targetTypeErasure, Object jsonSource) {
+                if (targetType==String.class)
+                    return String.valueOf(((JSONObject) jsonSource).getInt("x"));
+                return DEFAULT;
+            }
+        });
+
+        String[] r = (String[]) req.bindJSON(String[].class, String[].class, JSONArray.fromObject("[{x:1},{x:2}]"));
+        assertTrue(Arrays.equals(r,new String[]{"1","2"}));
+    }
+
+    public void testInterceptor3() {
+        RequestImpl req = createFakeRequest();
+        req.setBindInterceptor(new BindInterceptor() {
+            @Override
+            public Object instantiate(Class actualType, JSONObject json) {
+                if (actualType.equals(Point.class))
+                    return new Point(1,2);
+                return DEFAULT;
+            }
+        });
+
+        Object[] r = (Object[]) req.bindJSON(Object[].class, Object[].class, JSONArray.fromObject("[{$class:'"+Point.class.getName()+"'}]"));
+        assertTrue(Arrays.equals(r,new Object[]{new Point(1,2)}));
+    }
+
 }

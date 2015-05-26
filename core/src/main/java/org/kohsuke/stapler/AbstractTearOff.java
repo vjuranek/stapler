@@ -24,6 +24,7 @@
 package org.kohsuke.stapler;
 
 import java.net.URL;
+import java.util.Collection;
 
 /**
  * Partial default implementation of tear-off class, for convenience of derived classes.
@@ -44,10 +45,24 @@ public abstract class AbstractTearOff<CLT,S,E extends Exception> extends Caching
             classLoader = null;
     }
 
+    protected final WebApp getWebApp() {
+        return owner.webApp;
+    }
+
     /**
-     * Default file extension of this kind of scripts, such as ".jelly"
+     * The file extension of this kind of scripts, such as ".jelly"
      */
     protected abstract String getDefaultScriptExtension();
+
+    /**
+     * Checks if the file name is allowed as a script of this type.
+     *
+     * This is necessary to have multiple facets co-exist peacefully
+     * without them trying to load each other's scripts.
+     */
+    protected boolean hasAllowedExtension(String name) {
+        return name.endsWith(getDefaultScriptExtension());
+    }
 
     /**
      * Loads the script just from the target class without considering inherited scripts
@@ -56,6 +71,10 @@ public abstract class AbstractTearOff<CLT,S,E extends Exception> extends Caching
     public S resolveScript(String name) throws E {
         if (name.lastIndexOf('.')<=name.lastIndexOf('/'))   // no file extension provided
             name += getDefaultScriptExtension();
+        if (!hasAllowedExtension(name))
+            // for multiple Facets to co-exist peacefully, we need to be able to determine
+            // which Facet is responsible for a given view just from the file name
+            return null;
 
         URL res = getResource(name);
         if(res==null) {

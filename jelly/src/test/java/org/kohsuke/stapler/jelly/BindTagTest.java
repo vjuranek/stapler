@@ -25,8 +25,10 @@ public class BindTagTest extends JettyTestCase {
     public void test1() throws Exception {
         WebClient wc = new WebClient();
         HtmlPage page = wc.getPage(new URL(url, "/"));
-        System.out.println(page.getWebResponse().getContentAsString());
-
+        String content = page.getWebResponse().getContentAsString();
+        System.out.println(content);
+        //Check that prototype is included in the page
+        assertTrue(content.contains("/am/org/kohsuke/stapler/framework/prototype/prototype.js"));
         page.executeJavaScript("v.foo('hello world');");
         assertEquals("hello world",value);
     }

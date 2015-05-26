@@ -32,21 +32,24 @@ class AncestorImpl implements Ancestor {
     private final List<AncestorImpl> owner;
     private final int listIndex;
 
-    private Object object;
-    private String[] tokens;
-    private int index;
-    private String contextPath;
+    private final Object object;
+    private final String[] tokens;
+    private final int index;
+    private final String contextPath;
 
-    public AncestorImpl(List<AncestorImpl> owner) {
-        this.owner = owner;
+    /**
+     * True if the request URL had '/' in the end.
+     */
+    private final boolean endsWithSlash;
+
+    AncestorImpl(RequestImpl req, Object object) {
+        this.owner = req.ancestors;
         listIndex = owner.size();
         owner.add(this);
-    }
-
-    public void set(Object object, RequestImpl req ) {
         this.object = object;
         this.tokens = req.tokens.rawTokens;
         this.index = req.tokens.idx;
+        this.endsWithSlash = req.tokens.endsWithSlash;
         this.contextPath = req.getContextPath();
     }
 
@@ -65,7 +68,7 @@ class AncestorImpl implements Ancestor {
     }
 
     public String getRestOfUrl() {
-        StringBuilder buf = new StringBuilder(contextPath);
+        StringBuilder buf = new StringBuilder();
         for( int i=index; i<tokens.length; i++ ) {
             if (buf.length()>0) buf.append('/');
             buf.append(tokens[i]);
@@ -89,7 +92,7 @@ class AncestorImpl implements Ancestor {
 
     public String getRelativePath() {
         StringBuilder buf = new StringBuilder();
-        for( int i=index; i<tokens.length; i++ ) {
+        for( int i=index+(endsWithSlash?0:1); i<tokens.length; i++ ) {
             if(buf.length()>0)  buf.append('/');
             buf.append("..");
         }

@@ -30,9 +30,14 @@ import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * This request-scope object keeps track of which {@link Adjunct}s are already included.
@@ -80,6 +85,24 @@ public class AdjunctsInPage {
     }
 
     /**
+     * Gets what has been already included/assumed.
+     *
+     * This method returns a live unmodifiable view of what's included.
+     * So if at some later point more adjuncts are loaded, the view
+     * obtained earlier will reflect that.
+     */
+    public Set<String> getIncluded() {
+        return Collections.unmodifiableSet(included);
+    }
+
+    /**
+     * Checks if something has already been included/assumed.
+     */
+    public boolean isIncluded(String include) {
+        return included.contains(include);
+    }
+
+    /**
      * Generates the script tag and CSS link tag to include necessary adjuncts,
      * and records the fact that those adjuncts are already included in the page,
      * so that it won't be loaded again.
@@ -99,6 +122,10 @@ public class AdjunctsInPage {
      * already included in the page.
      */
     public void assumeIncluded(String... includes) throws IOException, SAXException {
+        assumeIncluded(Arrays.asList(includes));
+    }
+
+    public void assumeIncluded(Collection<String> includes) throws IOException, SAXException {
         List<Adjunct> needed = new ArrayList<Adjunct>();
         for (String include : includes)
             findNeeded(include,needed);
@@ -136,10 +163,11 @@ public class AdjunctsInPage {
                 findNeeded(req,needed);
             needed.add(a);
         } catch (NoSuchAdjunctException e) {
-            // ignore error
+            LOGGER.log(Level.WARNING, "No such adjunct found: "+include,e);
         }
     }
 
     private static final String KEY = AdjunctsInPage.class.getName();
 
+    private static final Logger LOGGER = Logger.getLogger(AdjunctsInPage.class.getName());
 }

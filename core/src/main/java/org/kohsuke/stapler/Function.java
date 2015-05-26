@@ -23,7 +23,9 @@
 
 package org.kohsuke.stapler;
 
-import com.google.common.collect.MapMaker;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import org.kohsuke.stapler.interceptor.Interceptor;
 import org.kohsuke.stapler.interceptor.InterceptorAnnotation;
 
@@ -35,7 +37,6 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
-import java.util.Map;
 
 /**
  * Abstracts the difference between normal instance methods and
@@ -84,21 +85,30 @@ public abstract class Function {
     /**
      * Calls {@link #bindAndInvoke(Object, StaplerRequest, StaplerResponse, Object...)} and then
      * optionally serve the response object.
+     *
+     * @return
+     *      true if the request was dispatched and processed. false if the dispatch was cancelled
+     *      and the search for the next request handler should continue. An exception is thrown
+     *      if the request was dispatched but the processing failed.
      */
-    void bindAndInvokeAndServeResponse(Object node, RequestImpl req, ResponseImpl rsp, Object... headArgs) throws IllegalAccessException, InvocationTargetException, ServletException, IOException {
+    boolean bindAndInvokeAndServeResponse(Object node, RequestImpl req, ResponseImpl rsp, Object... headArgs) throws IllegalAccessException, InvocationTargetException, ServletException, IOException {
         try {
             Object r = bindAndInvoke(node, req, rsp, headArgs);
             if (getReturnType()!=void.class)
                 renderResponse(req,rsp,node, r);
+            return true;
         } catch (InvocationTargetException e) {
             // exception as an HttpResponse
             Throwable te = e.getTargetException();
-            if (!renderResponse(req,rsp,node,te))
-                throw e;    // unprocessed exception
+            if (te instanceof CancelRequestHandlingException)
+                return false;
+            if (renderResponse(req,rsp,node,te))
+                return true;    // exception rendered the response
+            throw e;    // unprocessed exception
         }
     }
 
-    private boolean renderResponse(RequestImpl req, ResponseImpl rsp, Object node, Object ret) throws IOException, ServletException {
+    static boolean renderResponse(RequestImpl req, ResponseImpl rsp, Object node, Object ret) throws IOException, ServletException {
         for (HttpResponseRenderer r : req.stapler.getWebApp().getResponseRenderers())
             if (r.generateResponse(req,rsp,node,ret))
                 return true;
@@ -134,7 +144,7 @@ public abstract class Function {
                 }
 
                 // if the databinding method is provided, call that
-                Function binder = PARSE_METHODS.get(t);
+                Function binder = PARSE_METHODS.getUnchecked(t);
                 if (binder!=RETURN_NULL) {
                     arguments[i] = binder.bindAndInvoke(null,req,rsp);
                     continue;
@@ -155,7 +165,7 @@ public abstract class Function {
      * Computing map that discovers the static 'fromStapler' method from a class.
      * The discovered method will be returned as a Function so that the invocation can do parameter injections.
      */
-    private static final Map<Class,Function> PARSE_METHODS;
+    private static final LoadingCache<Class,Function> PARSE_METHODS;
     private static final Function RETURN_NULL;
 
     static {
@@ -165,8 +175,8 @@ public abstract class Function {
             throw new AssertionError(e);    // impossible
         }
 
-        PARSE_METHODS = new MapMaker().weakKeys().makeComputingMap(new com.google.common.base.Function<Class,Function>() {
-            public Function apply(Class from) {
+        PARSE_METHODS = CacheBuilder.newBuilder().weakKeys().build(new CacheLoader<Class,Function>() {
+            public Function load(Class from) {
                 // MethdFunction for invoking a static method as a static method
                 FunctionList methods = new ClassDescriptor(from).methods.name("fromStapler");
                 switch (methods.size()) {

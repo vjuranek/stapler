@@ -24,6 +24,13 @@ public abstract class CrumbIssuer {
     }
 
     /**
+     * Sends the crumb value in plain text, enabling retrieval through XmlHttpRequest.
+     */
+    public HttpResponse doCrumb() {
+        return HttpResponses.plainText(issueCrumb());
+    }
+
+    /**
      * Validates a crumb that was submitted along with the request.
      *
      * @param request
@@ -31,12 +38,12 @@ public abstract class CrumbIssuer {
      * @param submittedCrumb
      *      The submitted crumb value to be validated.
      *
-     * @throws Exception
+     * @throws SecurityException
      *      If the crumb doesn't match and the request processing should abort.
      */
     public void validateCrumb(StaplerRequest request, String submittedCrumb) {
         if (!issueCrumb(request).equals(submittedCrumb)) {
-            throw new SecurityException("Request failed to pass the crumb test");
+            throw new SecurityException("Request failed to pass the crumb test (try clearing your cookies)");
         }
     }
 

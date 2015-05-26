@@ -1,16 +1,17 @@
 package org.kohsuke.stapler.compression;
 
+import com.jcraft.jzlib.GZIPOutputStream;
+
 import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpServletResponseWrapper;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.util.zip.GZIPOutputStream;
 
 /**
  * {@link HttpServletResponse} that recognizes Content-Encoding: gzip in the response header
- * and acts accoringly.
+ * and acts accordingly.
  *
  * @author Kohsuke Kawaguchi
  */
@@ -25,27 +26,17 @@ public class CompressionServletResponse extends HttpServletResponseWrapper {
         super(response);
     }
 
+    /**
+     * If we've already inserted gzip compression filter, then we can't let the content length set from the app
+     * because that refers to the size of the uncompressed content, where we actually need the size of the compressed
+     * content.
+     *
+     * For the same reason, if the content length is set before we can decide whether to
+     */
     @Override
-    public void setHeader(String name, String value) {
-        super.setHeader(name, value);
-        activateCompressionIfNecessary(name,value);
-    }
-
-    @Override
-    public void addHeader(String name, String value) {
-        super.addHeader(name, value);
-        activateCompressionIfNecessary(name, value);
-    }
-
-    private void activateCompressionIfNecessary(String name, String value) {
-        try {
-            if (name.equals("Content-Encoding") && value.equals("gzip")) {
-                if (stream==null)
-                    stream = new FilterServletOutputStream(new GZIPOutputStream(super.getOutputStream()));
-            }
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+    public void setContentLength(int len) {
+        if (stream!=null)       return;
+        super.setContentLength(len);
     }
 
     @Override
@@ -62,5 +53,17 @@ public class CompressionServletResponse extends HttpServletResponseWrapper {
     public ServletOutputStream getOutputStream() throws IOException {
         if (stream!=null)   return stream;
         return super.getOutputStream();
+    }
+
+    public void activate() throws IOException {
+        if (stream==null) {
+            super.setHeader("Content-Encoding", "gzip");
+            stream = new FilterServletOutputStream(new GZIPOutputStream(super.getOutputStream()));
+        }
+    }
+
+    public void close() throws IOException {
+        if (stream!=null)
+            stream.close();
     }
 }

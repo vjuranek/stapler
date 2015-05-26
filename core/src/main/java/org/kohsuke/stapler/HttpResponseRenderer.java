@@ -23,15 +23,19 @@
 
 package org.kohsuke.stapler;
 
-import net.sf.json.JSON;
-import net.sf.json.JSONArray;
-import net.sf.json.JSONObject;
-import org.kohsuke.stapler.export.Flavor;
-
-import javax.servlet.ServletException;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.Collection;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import javax.servlet.ServletException;
+import net.sf.json.JSON;
+import net.sf.json.JSONArray;
+import net.sf.json.JSONException;
+import net.sf.json.JSONNull;
+import net.sf.json.JSONObject;
+import net.sf.json.util.JSONUtils;
+import org.kohsuke.stapler.export.Flavor;
 
 /**
  * Pluggable interface that takes the return value from request handling
@@ -40,6 +44,9 @@ import java.util.Collection;
  * @author Kohsuke Kawaguchi
  */
 public abstract class HttpResponseRenderer {
+
+    private static final Logger LOGGER = Logger.getLogger(HttpResponseRenderer.class.getName());
+
     /**
      *
      * @param node
@@ -71,17 +78,29 @@ public abstract class HttpResponseRenderer {
                 PrintWriter w = rsp.getWriter();
 
                 // handle other primitive types as JSON response
+                try {
                 if (response instanceof String) {
-                    w.print('"'+response.toString().replace("\"","\\\"")+'"');
+                    w.print(quote((String) response));
                 } else
                 if (response instanceof Number || response instanceof Boolean) {
                     w.print(response);
                 } else
                 if (response instanceof Collection || (response!=null && response.getClass().isArray())) {
-                    JSONArray.fromObject(response).write(w);
+                    JSONArray.fromObject(response, rsp.getJsonConfig()).write(w);
+                } else
+                if (response==null) {
+                    JSONNull.getInstance().write(w);
+                } else if (response instanceof Throwable) {
+                    // as caught by Function.bindAndInvokeAndServeResponse
+                    LOGGER.log(Level.WARNING, "call to " + req.getRequestURI() + " failed", (Throwable) response);
+                    return false;
                 } else {
                     // last fall back
-                    JSONObject.fromObject(response).write(w);
+                    JSONObject.fromObject(response, rsp.getJsonConfig()).write(w);
+                }
+                } catch (JSONException x) {
+                    LOGGER.log(Level.WARNING, "failed to serialize " + response + " for " + req.getRequestURI() + " given " + req.getAncestors(), x);
+                    return false;
                 }
                 return true;
             }
@@ -101,7 +120,18 @@ public abstract class HttpResponseRenderer {
             if (response instanceof HttpResponse) {
                 // let the result render the response
                 HttpResponse r = (HttpResponse) response;
-                r.generateResponse(req,rsp,node);
+                try {
+                    r.generateResponse(req,rsp,node);
+                } catch (IOException e) {
+                    if (!handleHttpResponse(req,rsp,node,e))
+                        throw e;
+                } catch (RuntimeException e) {
+                    if (!handleHttpResponse(req,rsp,node,e))
+                        throw e;
+                } catch (ServletException e) {
+                    if (!handleHttpResponse(req,rsp,node,e))
+                        throw e;
+                }
                 return true;
             }
             return false;
@@ -116,4 +146,9 @@ public abstract class HttpResponseRenderer {
             return false;
         }
     }
+
+    static String quote(String text) {
+        return JSONUtils.quote(text);
+    }
+
 }
